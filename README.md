@@ -8,7 +8,7 @@ Codebase X-Ray turns a repository into an interactive map of how it actually wor
 
 > **Status: Phase 5 (MCP server).** `xray ./my-project` indexes a TypeScript/JavaScript repository and opens an interactive map. Click any node or edge for the exact source lines behind it, and ask "how does login work?" to trace a feature. Before you commit, uncommitted changes light up amber and everything that calls or imports them lights up red. `xray mcp` gives your coding agent read access to the same evidence graph, with the same ids.
 
-![An uncommitted edit to hashPassword in amber, with everything that depends on it in red](docs/ui-diff-impact.jpg)
+![Focus view: indexRepository in the middle, its callers on the left and what it calls on the right, with its source in the evidence panel](docs/ui-focus.jpg)
 
 ## Quick start
 
@@ -80,19 +80,23 @@ Blast radius of hashPassword  src/auth/hash.ts:3 (upstream, up to 4 hops):
   3  src/api/server.js  (file-level)
 ```
 
-## The map
+## The UI
 
-`xray serve` puts the graph canvas on the left and the evidence panel on the right.
+`xray serve` shows one canvas and an evidence panel. The canvas never tries to draw the whole graph at once; it has three views.
 
-- **Zoom by expanding.** The map opens on folder clusters. Press `+` or double-click to expand a cluster into its files and a file into its symbols. Edges roll up to whatever is visible, so a collapsed cluster still shows what it depends on, with a count of the underlying edges.
-- **Evidence on click.** Click a node for its own source lines: a symbol's range with a little context, a file's contents, or every line that imports an external package. Click an edge for each underlying relationship, with its trust badge (*Deterministic* or *Heuristic · 70%*) and the exact cited lines. Lines that moved since indexing are flagged *stale*.
-- **Trace a feature.** Type a question such as *how does checkout work?* and the flow lights up from its entry points (see [Flow and impact](#flow-and-impact)).
-- **Trace between nodes.** *Trace from here* and *Trace to here* light up the shortest paths between two nodes, and *Show downstream* lights up everything a node reaches.
-- **Diff review.** Uncommitted changes are amber (Δ) and the code that calls or imports them is red (!), so you can review an AI edit's reach before committing. Collapsed clusters show how many changes they contain, and the evidence panel marks the exact changed lines.
-- **Blast radius.** The button on any node shows, in red, everything that depends on it.
-- **Search** files and symbols by name, then jump straight to them.
+- **Focus** (search for anything, or click *Focus*): the selected function, class or file in the middle, what calls it on the left, and what it calls on the right. Click a neighbour to move the focus there, and use *Back* (or Backspace) to return. Depth 2 adds the next ring. A side with too many neighbours is grouped by file.
+- **Trace** shows only the nodes in one result, laid out left to right:
+  - *Trace a feature*: ask a question such as *how does checkout work?*; entry points are marked *start* (see [Flow and impact](#flow-and-impact)).
+  - *Path from* / *Path to*: the shortest paths between two nodes, or everything downstream of one.
+  - *Blast radius*: everything that depends on a node, in red.
+  - *Review changes*: your uncommitted edits in amber, and the code that calls or imports them, at risk, in red.
+- **Map**: the cluster overview. Press `+` to expand a cluster into files and a file into symbols. Edges stay faint until you click a node, and then only that node's edges stand out. Packages are hidden unless you turn them on.
 
-The client is React + [React Flow](https://reactflow.dev) with a nested [dagre](https://github.com/dagrejs/dagre) layout. esbuild bundles it in memory (in about 100 ms) when the server starts, so there is still no build step.
+![Review changes: changed code in amber, the code that depends on it in red](docs/ui-review-changes.jpg)
+
+Click any node for its source lines, and any arrow for each underlying relationship with its trust badge (*Deterministic* or *Heuristic · 70%*), the exact cited lines, and its `edge #` and `evidence #` ids. Lines that moved since indexing are flagged *stale*.
+
+The client is React + [React Flow](https://reactflow.dev), laid out with [dagre](https://github.com/dagrejs/dagre). esbuild bundles it in memory (in about 100 ms) when the server starts, so there is still no build step.
 
 ## HTTP API
 

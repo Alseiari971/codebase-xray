@@ -6,6 +6,7 @@ import {
   MiniMap,
   Position,
   ReactFlow,
+  ReactFlowProvider,
   useReactFlow,
   type Edge,
   type Node,
@@ -102,16 +103,18 @@ const EDGE_COLORS: Record<string, string> = { imports: 'var(--edge-imports)', ca
 
 type EdgeEmphasis = 'selected' | 'flow' | 'impact' | null;
 
-function edgeStyle(edge: VisibleEdge, emphasis: EdgeEmphasis) {
+/** `context` says how this edge relates to the selected node: the map shows a node's own edges and fades the rest. */
+function edgeStyle(edge: VisibleEdge, emphasis: EdgeEmphasis, context: 'none' | 'incident' | 'unrelated') {
   // Mixed roll-ups keep the normal style; the evidence panel spells out the mix.
   const heuristic = edge.deterministicCount === 0;
   const base = heuristic ? 'var(--heuristic)' : (EDGE_COLORS[edge.relation] ?? 'var(--edge-other)');
   const color = emphasis === 'selected' ? 'var(--accent)' : emphasis === 'flow' ? 'var(--flow)' : emphasis === 'impact' ? 'var(--impact)' : base;
+  const strong = emphasis !== null || context === 'incident';
   return {
     stroke: color,
-    strokeWidth: emphasis ? 2.5 : Math.min(1 + Math.log2(edge.edgeIds.length), 3.5),
+    strokeWidth: strong ? 2.5 : Math.min(1 + Math.log2(edge.edgeIds.length) / 2, 2.5),
     strokeDasharray: heuristic ? '6 4' : edge.relation === 'imports' ? '2 3' : undefined,
-    opacity: emphasis ? 1 : 0.75,
+    opacity: strong ? 1 : context === 'unrelated' ? 0.05 : 0.22,
   };
 }
 
@@ -119,6 +122,8 @@ interface Props {
   view: GraphView;
   highlights: Highlights;
   onSelectNode: (id: string) => void;
+  /** Double-click on a file, symbol or package: open it in Focus. */
+  onOpenNode: (id: string) => void;
   onSelectEdge: (edge: VisibleEdge) => void;
   onToggle: (id: string) => void;
   onClear: () => void;
@@ -126,7 +131,16 @@ interface Props {
   focus: { ids: string[]; seq: number } | null;
 }
 
-export function GraphCanvas({ view, highlights, onSelectNode, onSelectEdge, onToggle, onClear, focus }: Props) {
+/** Each canvas gets its own React Flow store, so switching views always starts with a fresh, fitted viewport. */
+export function GraphCanvas(props: Props) {
+  return (
+    <ReactFlowProvider>
+      <GraphCanvasInner {...props} />
+    </ReactFlowProvider>
+  );
+}
+
+function GraphCanvasInner({ view, highlights, onSelectNode, onOpenNode, onSelectEdge, onToggle, onClear, focus }: Props) {
   const boxes = useMemo(() => layoutView(view), [view]);
   const { fitView } = useReactFlow();
 
@@ -174,15 +188,18 @@ export function GraphCanvas({ view, highlights, onSelectNode, onSelectEdge, onTo
               : edge.edgeIds.some((id) => highlights.impactEdges.has(id))
                 ? 'impact'
                 : null;
-        const style = edgeStyle(edge, emphasis);
+        const selectedNode = highlights.selectedNode;
+        const context = selectedNode === null ? 'none' : edge.source === selectedNode || edge.target === selectedNode ? 'incident' : 'unrelated';
+        const style = edgeStyle(edge, emphasis, context);
         return {
           id: edge.id,
           source: edge.source,
           target: edge.target,
           style,
-          zIndex: emphasis ? 10 : 1,
+          zIndex: emphasis || context === 'incident' ? 10 : 1,
           markerEnd: { type: MarkerType.ArrowClosed, color: style.stroke, width: 14, height: 14 },
-          label: edge.edgeIds.length > 1 ? String(edge.edgeIds.length) : undefined,
+          // Counts only on the edges you are looking at; on every edge they are noise.
+          label: (emphasis || context === 'incident') && edge.edgeIds.length > 1 ? String(edge.edgeIds.length) : undefined,
           labelStyle: { fill: 'var(--muted)', fontSize: 10 },
           labelBgStyle: { fill: 'var(--bg)' },
           interactionWidth: 14,
@@ -213,11 +230,15 @@ export function GraphCanvas({ view, highlights, onSelectNode, onSelectEdge, onTo
       edges={edges}
       nodeTypes={nodeTypes}
       onNodeClick={(_event, node) => onSelectNode(node.id)}
-      onNodeDoubleClick={(_event, node) => onToggle(node.id)}
+      // Clusters open in place; anything else opens in Focus.
+      onNodeDoubleClick={(_event, node) => (view.byId.get(node.id)?.node.layer === 'cluster' ? onToggle(node.id) : onOpenNode(node.id))}
       onEdgeClick={(_event, edge) => onSelectEdge((edge.data as { edge: VisibleEdge }).edge)}
       onPaneClick={onClear}
       nodesConnectable={false}
       elementsSelectable
+      fitView
+      fitViewOptions={{ padding: 0.12, maxZoom: 1.4 }}
+      zoomOnDoubleClick={false}
       minZoom={0.01}
       maxZoom={2.5}
       proOptions={{ hideAttribution: true }}

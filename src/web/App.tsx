@@ -1,31 +1,28 @@
-import { ReactFlowProvider } from '@xyflow/react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { DiffResponse, FlowResponse, GraphResponse, ImpactResponse } from '../shared/api-types.ts';
+import type { DiffResponse, GraphResponse } from '../shared/api-types.ts';
 import { api } from './api.ts';
 import { EvidencePanel, type Selection } from './EvidencePanel.tsx';
+import { FlatCanvas, type FlatHighlights } from './FlatCanvas.tsx';
+import { focusView, subgraphView } from './focus.ts';
 import { GraphCanvas, type Highlights } from './GraphCanvas.tsx';
 import { ancestors, buildView, indexGraph, markVisible, searchNodes, type GraphIndex, type VisibleEdge } from './model.ts';
 
-interface FlowState {
-  from: string | null;
-  to: string | null;
-  /** Set when tracing a feature by question instead of between two nodes. */
-  question: string | null;
-  result: FlowResponse | null;
-  error: string | null;
-  loading: boolean;
+type Mode = 'map' | 'focus' | 'trace';
+
+/** The result shown in Trace mode. */
+interface Trace {
+  kind: 'path' | 'downstream' | 'feature' | 'impact' | 'diff';
+  title: string;
+  status: string;
+  nodeIds: string[];
+  edgeIds: number[];
+  /** Where it starts: entry points, path ends, or the node a blast radius is for. */
+  entries: string[];
+  changed: string[];
+  impacted: string[];
 }
 
-interface ImpactState {
-  seed: string;
-  result: ImpactResponse | null;
-  error: string | null;
-}
-
-const NO_FLOW: FlowState = { from: null, to: null, question: null, result: null, error: null, loading: false };
-
-/** Reveal a traced flow node by node only while it stays readable. */
-const MAX_REVEAL = 60;
+const EMPTY_TRACE_SETS = { changed: [], impacted: [] };
 
 export function App() {
   const [graph, setGraph] = useState<GraphResponse | null>(null);
@@ -43,23 +40,42 @@ export function App() {
     return <div className="splash">The index is empty. Run <code>xray index &lt;path&gt;</code> first.</div>;
   }
   return (
-    <ReactFlowProvider>
+    <>
       <Explorer graph={graph} diff={diff} />
-    </ReactFlowProvider>
+    </>
   );
 }
 
 function Explorer({ graph, diff }: { graph: GraphResponse; diff: DiffResponse | null }) {
   const index = useMemo(() => indexGraph(graph), [graph]);
+  const [mode, setMode] = useState<Mode>('map');
+  const [selection, setSelection] = useState<Selection>(null);
+
+  // Map
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   const [showExternal, setShowExternal] = useState(false);
   const [showDiff, setShowDiff] = useState(true);
-  const [showDiffImpact, setShowDiffImpact] = useState(true);
-  const [selection, setSelection] = useState<Selection>(null);
-  const [flow, setFlow] = useState<FlowState>(NO_FLOW);
-  const [impact, setImpact] = useState<ImpactState | null>(null);
+  const [mapFocus, setMapFocus] = useState<{ ids: string[]; seq: number } | null>(null);
+  const mapView = useMemo(() => buildView(index, { expanded, showExternal }), [index, expanded, showExternal]);
 
-  const view = useMemo(() => buildView(index, { expanded, showExternal }), [index, expanded, showExternal]);
+  // Focus
+  const [focusHistory, setFocusHistory] = useState<string[]>([]);
+  const [focusDepth, setFocusDepth] = useState(1);
+  const [focusImports, setFocusImports] = useState(true);
+  const focusId = focusHistory.at(-1) ?? null;
+  const focused = useMemo(
+    () => (focusId ? focusView(index, focusId, { depth: focusDepth, relations: focusImports ? ['calls', 'imports'] : ['calls'] }) : null),
+    [index, focusId, focusDepth, focusImports],
+  );
+
+  // Trace
+  const [trace, setTrace] = useState<Trace | null>(null);
+  const [tracing, setTracing] = useState<string | null>(null);
+  const [traceError, setTraceError] = useState<string | null>(null);
+  const [pathPick, setPathPick] = useState<{ from: string | null; to: string | null }>({ from: null, to: null });
+  const traced = useMemo(() => (trace ? subgraphView(index, trace.nodeIds, trace.edgeIds) : null), [index, trace]);
+
+  const name = useCallback((id: string) => index.nodes.get(id)?.symbol ?? index.nodes.get(id)?.name ?? id, [index]);
 
   const toggle = useCallback((id: string) => {
     setExpanded((previous) => {
@@ -70,129 +86,174 @@ function Explorer({ graph, diff }: { graph: GraphResponse; diff: DiffResponse | 
     });
   }, []);
 
-  /** Expands every ancestor so the given nodes are drawn individually. */
-  const reveal = useCallback(
-    (ids: string[]) => {
-      const toExpand = ids.flatMap((id) => ancestors(index, id));
-      if (ids.some((id) => index.nodes.get(id)?.layer === 'external')) setShowExternal(true);
-      setExpanded((previous) => (toExpand.every((id) => previous.has(id)) ? previous : new Set([...previous, ...toExpand])));
+  const focusOn = useCallback((id: string) => {
+    setFocusHistory((history) => (history.at(-1) === id ? history : [...history, id].slice(-50)));
+    setSelection({ kind: 'node', id });
+    setMode('focus');
+  }, []);
+
+  const showInMap = useCallback(
+    (id: string) => {
+      const toExpand = ancestors(index, id);
+      if (index.nodes.get(id)?.layer === 'external') setShowExternal(true);
+      setExpanded((previous) => new Set([...previous, ...toExpand]));
+      setSelection({ kind: 'node', id });
+      setMapFocus((previous) => ({ ids: [id], seq: (previous?.seq ?? 0) + 1 }));
+      setMode('map');
     },
     [index],
   );
 
-  const [focus, setFocus] = useState<{ ids: string[]; seq: number } | null>(null);
-  const focusOn = useCallback((ids: string[]) => setFocus((previous) => ({ ids, seq: (previous?.seq ?? 0) + 1 })), []);
+  const run = (label: string, work: () => Promise<Trace>) => {
+    setTracing(label);
+    setTraceError(null);
+    work().then(
+      (result) => {
+        setTrace(result);
+        setSelection(null);
+        setMode('trace');
+        setTracing(null);
+      },
+      (error: Error) => {
+        setTraceError(error.message);
+        setTracing(null);
+      },
+    );
+  };
 
-  /** Select from the canvas: the node is already on screen. */
-  const pickNode = useCallback((id: string) => setSelection({ kind: 'node', id }), []);
-  /** Select from search or the panel: reveal the node and zoom to it. */
-  const selectNode = useCallback(
-    (id: string) => {
-      reveal([id]);
-      setSelection({ kind: 'node', id });
-      focusOn([id]);
-    },
-    [reveal, focusOn],
-  );
-  const selectEdge = useCallback((edge: VisibleEdge) => setSelection({ kind: 'edge', edge }), []);
-  const clearSelection = useCallback(() => setSelection(null), []);
+  const traceQuestion = (question: string) =>
+    run(question, async () => {
+      const result = await api.flow({ question });
+      const entries = result.question?.entryPoints ?? [];
+      return {
+        kind: 'feature',
+        title: question,
+        status: entries.length === 0 ? 'Nothing in the code matches those words.' : `${result.reachable?.nodes.length ?? 0} nodes, starting from`,
+        nodeIds: result.reachable?.nodes ?? [],
+        edgeIds: result.reachable?.edges ?? [],
+        entries,
+        ...EMPTY_TRACE_SETS,
+      };
+    });
 
-  // Trace as soon as both ends are picked.
+  const tracePath = (from: string, to: string) =>
+    run(`${name(from)} → ${name(to)}`, async () => {
+      const result = await api.flow({ from, to });
+      return {
+        kind: 'path',
+        title: `${name(from)} → ${name(to)}`,
+        status: result.paths.length === 0 ? 'No path within 8 hops.' : `${result.paths.length} shortest path${result.paths.length > 1 ? 's' : ''}, ${result.paths[0]!.edges.length} hops`,
+        nodeIds: [...new Set(result.paths.flatMap((path) => path.nodes))],
+        edgeIds: [...new Set(result.paths.flatMap((path) => path.edges))],
+        entries: [from, to],
+        ...EMPTY_TRACE_SETS,
+      };
+    });
+
+  const traceDownstream = (from: string) =>
+    run(`everything ${name(from)} reaches`, async () => {
+      const result = await api.flow({ from });
+      return {
+        kind: 'downstream',
+        title: `downstream of ${name(from)}`,
+        status: `${result.reachable?.nodes.length ?? 0} nodes reachable`,
+        nodeIds: result.reachable?.nodes ?? [],
+        edgeIds: result.reachable?.edges ?? [],
+        entries: [from],
+        ...EMPTY_TRACE_SETS,
+      };
+    });
+
+  const traceImpact = (id: string) =>
+    run(`blast radius of ${name(id)}`, async () => {
+      const result = await api.impact({ ids: [id] });
+      const { symbols, files, clusters } = result.summary;
+      return {
+        kind: 'impact',
+        title: `blast radius of ${name(id)}`,
+        status: result.nodes.length === 0 ? 'Nothing depends on it within 4 hops.' : `${count(symbols, 'symbol')} in ${count(files, 'file')} across ${count(clusters, 'cluster')} depend on it`,
+        nodeIds: [id, ...result.nodes.map((node) => node.id)],
+        edgeIds: result.edges,
+        entries: [id],
+        changed: [],
+        impacted: result.nodes.map((node) => node.id),
+      };
+    });
+
+  const reviewChanges = () => {
+    if (!diff) return;
+    // Show changed symbols; a file only when the change is not inside any of its symbols.
+    const changed = diff.files.flatMap((file) => (file.symbolIds.length > 0 ? file.symbolIds : file.nodeId ? [file.nodeId] : []));
+    const impacted = diff.impact.nodes.map((node) => node.id);
+    const { symbols, files } = diff.impact.summary;
+    setTrace({
+      kind: 'diff',
+      title: `${count(diff.files.length, 'changed file')}`,
+      status: impacted.length === 0 ? 'Nothing else calls or imports the changed code.' : `${count(symbols, 'symbol')} in ${count(files, 'file')} call or import the changed code`,
+      nodeIds: [...diff.impact.seeds, ...changed, ...impacted],
+      edgeIds: diff.impact.edges,
+      entries: [],
+      changed: diff.nodeIds,
+      impacted,
+    });
+    setSelection(null);
+    setMode('trace');
+  };
+
+  // Path tracing: pick both ends, then trace.
   useEffect(() => {
-    if (!flow.from || !flow.to || flow.result || flow.error || flow.loading) return;
-    const { from, to } = flow;
-    // Ignore the answer if the user picked different ends meanwhile.
-    const update = (patch: Partial<FlowState>) =>
-      setFlow((current) => (current.from === from && current.to === to ? { ...current, ...patch, loading: false } : current));
-    setFlow((current) => ({ ...current, loading: true }));
-    api.flow({ from, to }).then(
-      (result) => {
-        update({ result });
-        const nodes = result.paths.flatMap((path) => path.nodes);
-        reveal(nodes);
-        if (nodes.length > 0) focusOn(nodes);
-      },
-      (error: Error) => update({ error: error.message }),
-    );
-  }, [flow, reveal, focusOn]);
-
-  const traceDownstream = () => {
-    if (!flow.from) return;
-    setFlow((current) => ({ ...current, to: null, loading: true, result: null, error: null }));
-    api.flow({ from: flow.from }).then(
-      (result) => setFlow((current) => ({ ...current, result, loading: false })),
-      (error: Error) => setFlow((current) => ({ ...current, error: error.message, loading: false })),
-    );
-  };
-
-  const traceQuestion = (question: string) => {
-    setFlow({ ...NO_FLOW, question, loading: true });
-    api.flow({ question }).then(
-      (result) => {
-        setFlow((current) => (current.question === question ? { ...current, result, loading: false } : current));
-        const reached = result.reachable?.nodes ?? [];
-        const shown = reached.length <= MAX_REVEAL ? reached : (result.question?.entryPoints ?? []);
-        reveal(shown);
-        if (shown.length > 0) focusOn(shown);
-      },
-      (error: Error) =>
-        setFlow((current) => (current.question === question ? { ...current, error: error.message, loading: false } : current)),
-    );
-  };
-
-  const showImpact = (seed: string) => {
-    setImpact({ seed, result: null, error: null });
-    api.impact({ ids: [seed] }).then(
-      (result) => setImpact((current) => (current?.seed === seed ? { ...current, result } : current)),
-      (error: Error) => setImpact((current) => (current?.seed === seed ? { ...current, error: error.message } : current)),
-    );
-  };
+    if (pathPick.from && pathPick.to) {
+      tracePath(pathPick.from, pathPick.to);
+      setPathPick({ from: null, to: null });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pathPick]);
 
   const changedIds = useMemo(() => new Set(diff?.nodeIds ?? []), [diff]);
   const changedFiles = useMemo(() => new Map((diff?.files ?? []).map((file) => [file.path, file])), [diff]);
+  const diffImpacted = useMemo(() => new Set(diff?.impact.nodes.map((node) => node.id) ?? []), [diff]);
 
-  // An explicit blast radius wins over the diff's.
-  const activeImpact = impact?.result ?? (showDiff && showDiffImpact ? (diff?.impact ?? null) : null);
+  const mapHighlights = useMemo<Highlights>(() => {
+    const flowLike = trace && trace.kind !== 'impact' && trace.kind !== 'diff';
+    return {
+      selectedNode: selection?.kind === 'node' ? (mapView.representative(selection.id) ?? null) : null,
+      selectedEdge: selection?.kind === 'edge' ? selection.edge.id : null,
+      changed: showDiff ? markVisible(mapView, changedIds) : new Map(),
+      impacted: showDiff ? markVisible(mapView, diffImpacted) : new Map(),
+      impactEdges: new Set(showDiff ? (diff?.impact.edges ?? []) : []),
+      flowNodes: flowLike ? markVisible(mapView, trace.nodeIds) : new Map(),
+      flowEdges: new Set(flowLike ? trace.edgeIds : []),
+      flowEnds: { from: null, to: null, entries: new Set() },
+    };
+  }, [mapView, selection, showDiff, changedIds, diffImpacted, diff, trace]);
 
-  const highlights = useMemo<Highlights>(() => {
-    const flowNodeIds = flow.result ? (flow.result.reachable?.nodes ?? flow.result.paths.flatMap((path) => path.nodes)) : [];
-    const flowEdgeIds = flow.result ? (flow.result.reachable?.edges ?? flow.result.paths.flatMap((path) => path.edges)) : [];
-    const entryPoints = flow.result?.question?.entryPoints ?? [];
+  const flatHighlights = (view: { representative: (id: string) => string | undefined }, extra?: Trace): FlatHighlights => {
+    const mark = (ids: Iterable<string>) => new Set([...ids].map((id) => view.representative(id)).filter((id): id is string => id !== undefined));
     return {
       selectedNode: selection?.kind === 'node' ? (view.representative(selection.id) ?? null) : null,
       selectedEdge: selection?.kind === 'edge' ? selection.edge.id : null,
-      changed: showDiff ? markVisible(view, changedIds) : new Map(),
-      impacted: activeImpact ? markVisible(view, activeImpact.nodes.map((node) => node.id)) : new Map(),
-      impactEdges: new Set(activeImpact?.edges ?? []),
-      flowNodes: markVisible(view, flowNodeIds),
-      flowEdges: new Set(flowEdgeIds),
-      flowEnds: {
-        from: flow.from ? (view.representative(flow.from) ?? null) : null,
-        to: flow.to ? (view.representative(flow.to) ?? null) : null,
-        entries: new Set(entryPoints.map((id) => view.representative(id)).filter((id) => id !== undefined)),
-      },
+      changed: mark(extra ? extra.changed : showDiff ? changedIds : []),
+      impacted: mark(extra ? extra.impacted : showDiff ? diffImpacted : []),
+      entries: mark(extra?.entries ?? []),
     };
-  }, [view, selection, showDiff, changedIds, activeImpact, flow]);
+  };
 
-  // A selected edge may no longer exist after expanding or collapsing.
-  useEffect(() => {
-    if (selection?.kind === 'edge' && !view.edges.some((edge) => edge.id === selection.edge.id)) setSelection(null);
-  }, [view, selection]);
+  const selectEdge = useCallback((edge: VisibleEdge) => setSelection({ kind: 'edge', edge }), []);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !(event.target instanceof HTMLInputElement)) setSelection(null);
+      if (event.target instanceof HTMLInputElement) return;
+      if (event.key === 'Escape') setSelection(null);
+      if (event.key === 'Backspace' && mode === 'focus' && focusHistory.length > 1) setFocusHistory((h) => h.slice(0, -1));
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, []);
+  }, [mode, focusHistory.length]);
 
   const counts = useMemo(() => {
     const byLayer = (layer: string) => graph.nodes.filter((node) => node.layer === layer).length;
     return { files: byLayer('file'), symbols: byLayer('symbol'), externals: byLayer('external'), edges: graph.edges.length };
   }, [graph]);
-
-  const diffImpactFiles = diff?.impact.files.length ?? 0;
 
   return (
     <div className="app">
@@ -202,63 +263,139 @@ function Explorer({ graph, diff }: { graph: GraphResponse; diff: DiffResponse | 
           <span className="brand-name">Codebase X-Ray</span>
           <span className="repo" title={graph.root}>{basename(graph.root)}</span>
         </div>
-        <SearchBox index={index} onSelect={selectNode} />
+        <SearchBox index={index} onSelect={focusOn} />
         <QuestionBox onAsk={traceQuestion} />
-        <div className="toolbar-group">
-          <label className="toggle">
-            <input type="checkbox" checked={showExternal} onChange={(event) => setShowExternal(event.target.checked)} />
-            External ({counts.externals})
-          </label>
-          <label className={`toggle ${diff?.isRepo ? '' : 'disabled'}`} title={diff?.isRepo ? 'Highlight uncommitted changes' : 'Not a git repository'}>
-            <input type="checkbox" checked={showDiff} disabled={!diff?.isRepo} onChange={(event) => setShowDiff(event.target.checked)} />
-            <i className="swatch-dot changed" />
-            Diff{diff?.isRepo ? ` (${diff.files.length})` : ''}
-          </label>
-          {diff?.isRepo && (
-            <label
-              className={`toggle ${showDiff ? '' : 'disabled'}`}
-              title="Highlight code that calls or imports the changed code, up to 3 hops away"
-            >
-              <input
-                type="checkbox"
-                checked={showDiffImpact}
-                disabled={!showDiff}
-                onChange={(event) => setShowDiffImpact(event.target.checked)}
-              />
-              <i className="swatch-dot impact" />
-              Impact ({diffImpactFiles} {diffImpactFiles === 1 ? 'file' : 'files'})
-            </label>
-          )}
-          <button onClick={() => setExpanded(new Set())} title="Collapse everything back to clusters">Collapse all</button>
-        </div>
+        {diff?.isRepo && (
+          <button
+            className={diff.files.length > 0 ? 'review' : ''}
+            disabled={diff.files.length === 0}
+            onClick={reviewChanges}
+            title="Your uncommitted changes and everything that calls or imports them"
+          >
+            Review changes{diff.files.length > 0 ? ` (${diff.files.length})` : ''}
+          </button>
+        )}
         <span className="stats">
           {counts.files} files · {counts.symbols} symbols · {counts.edges} edges
         </span>
       </header>
 
-      {(flow.from || flow.to || flow.question) && (
-        <FlowBar
-          index={index}
-          flow={flow}
-          onSelect={selectNode}
-          onDownstream={traceDownstream}
-          onClear={() => setFlow(NO_FLOW)}
-        />
-      )}
-      {impact && <ImpactBar index={index} impact={impact} onSelect={selectNode} onClear={() => setImpact(null)} />}
+      <nav className="modebar">
+        <div className="tabs" role="tablist">
+          <button role="tab" className={mode === 'map' ? 'active' : ''} onClick={() => setMode('map')}>Map</button>
+          <button
+            role="tab"
+            className={mode === 'focus' ? 'active' : ''}
+            onClick={() => (selection?.kind === 'node' && selection.id !== focusId ? focusOn(selection.id) : setMode('focus'))}
+            title="One function, class or file with what calls it and what it calls"
+          >
+            Focus{focusId ? `: ${name(focusId)}` : ''}
+          </button>
+          <button role="tab" className={mode === 'trace' ? 'active' : ''} onClick={() => setMode('trace')} title="Feature traces, paths, blast radius and change reviews">
+            Trace{trace ? `: ${trace.title}` : ''}
+          </button>
+        </div>
+        <div className="modebar-tools">
+          {tracing && <span className="muted">Tracing {tracing}…</span>}
+          {traceError && <span className="error-text">{traceError}</span>}
+          {(pathPick.from || pathPick.to) && (
+            <span className="pick">
+              Path from <strong>{pathPick.from ? name(pathPick.from) : '…'}</strong> to <strong>{pathPick.to ? name(pathPick.to) : '…'}</strong>
+              {pathPick.from && !pathPick.to && <> · pick the end with <em>Path to</em>, or <button className="link" onClick={() => { traceDownstream(pathPick.from!); setPathPick({ from: null, to: null }); }}>show everything downstream</button></>}
+              <button className="link" onClick={() => setPathPick({ from: null, to: null })}>cancel</button>
+            </span>
+          )}
+          {mode === 'map' && (
+            <>
+              <label className="toggle">
+                <input type="checkbox" checked={showExternal} onChange={(event) => setShowExternal(event.target.checked)} />
+                Packages ({counts.externals})
+              </label>
+              {diff?.isRepo && (
+                <label className="toggle" title="Changed code in amber, what depends on it in red">
+                  <input type="checkbox" checked={showDiff} onChange={(event) => setShowDiff(event.target.checked)} />
+                  Changes
+                </label>
+              )}
+              <button onClick={() => setExpanded(new Set())}>Collapse all</button>
+            </>
+          )}
+          {mode === 'focus' && focused && (
+            <>
+              <button disabled={focusHistory.length < 2} onClick={() => setFocusHistory((h) => h.slice(0, -1))} title="Back (Backspace)">← Back</button>
+              <span className="muted">
+                {focused.counts.upstream} {focused.counts.upstream === 1 ? 'caller' : 'callers'} · {focused.counts.downstream} {focused.counts.downstream === 1 ? 'dependency' : 'dependencies'}
+              </span>
+              <span className="segmented">
+                Depth
+                {[1, 2].map((depth) => (
+                  <button key={depth} className={focusDepth === depth ? 'active' : ''} onClick={() => setFocusDepth(depth)}>{depth}</button>
+                ))}
+              </span>
+              <label className="toggle">
+                <input type="checkbox" checked={focusImports} onChange={(event) => setFocusImports(event.target.checked)} />
+                Imports
+              </label>
+            </>
+          )}
+          {mode === 'trace' && trace && (
+            <>
+              <span className="trace-status">{trace.status}</span>
+              {trace.entries.map((id) => (
+                <button key={id} className="link" onClick={() => setSelection({ kind: 'node', id })}>{name(id)}</button>
+              ))}
+              <button onClick={() => { setTrace(null); setMode(focusId ? 'focus' : 'map'); }}>Close</button>
+            </>
+          )}
+        </div>
+      </nav>
 
       <main className="workspace">
         <div className="canvas">
-          <GraphCanvas
-            view={view}
-            highlights={highlights}
-            onSelectNode={pickNode}
-            onSelectEdge={selectEdge}
-            focus={focus}
-            onToggle={toggle}
-            onClear={clearSelection}
-          />
-          <Legend />
+          {mode === 'map' && (
+            <>
+              <GraphCanvas
+                view={mapView}
+                highlights={mapHighlights}
+                onSelectNode={(id) => setSelection({ kind: 'node', id })}
+                onOpenNode={focusOn}
+                onSelectEdge={selectEdge}
+                focus={mapFocus}
+                onToggle={toggle}
+                onClear={() => setSelection(null)}
+              />
+              <Legend />
+            </>
+          )}
+          {mode === 'focus' && !focused && <FocusPicker index={index} onPick={focusOn} />}
+          {mode === 'trace' && !trace && (
+            <div className="canvas-start">
+              <h2>Nothing traced yet</h2>
+              <p>Ask a question in the <strong>Trace a feature</strong> box above, for example <em>how does login work?</em></p>
+              <p>Or select something and use <strong>Blast radius</strong>, <strong>Path from</strong> / <strong>Path to</strong> in the panel on the right.</p>
+              {diff?.isRepo && diff.files.length > 0 && (
+                <p><button className="review" onClick={reviewChanges}>Review your {count(diff.files.length, 'changed file')}</button></p>
+              )}
+            </div>
+          )}
+          {mode === 'focus' && focused && (
+            <FlatCanvas
+              view={focused}
+              highlights={flatHighlights(focused)}
+              onNodeClick={(id) => (id === focusId ? setSelection({ kind: 'node', id }) : focusOn(id))}
+              onEdgeClick={selectEdge}
+              emptyText="Nothing to show."
+            />
+          )}
+          {mode === 'trace' && traced && trace && (
+            <FlatCanvas
+              view={traced}
+              highlights={flatHighlights(traced, trace)}
+              onNodeClick={(id) => setSelection({ kind: 'node', id })}
+              onEdgeClick={selectEdge}
+              emptyText={trace.status}
+            />
+          )}
         </div>
         <EvidencePanel
           index={index}
@@ -266,94 +403,43 @@ function Explorer({ graph, diff }: { graph: GraphResponse; diff: DiffResponse | 
           expanded={expanded}
           changedFiles={changedFiles}
           changedIds={changedIds}
-          onSelectNode={selectNode}
+          onSelectNode={(id) => (mode === 'focus' ? focusOn(id) : setSelection({ kind: 'node', id }))}
           onToggle={toggle}
-          onTraceFrom={(id) => setFlow((current) => ({ ...NO_FLOW, from: id, to: current.to === id ? null : current.to }))}
-          onTraceTo={(id) => setFlow((current) => ({ ...NO_FLOW, to: id, from: current.from === id ? null : current.from }))}
-          onImpact={showImpact}
+          onTraceFrom={(id) => setPathPick((pick) => ({ ...pick, from: id }))}
+          onTraceTo={(id) => setPathPick((pick) => ({ ...pick, to: id }))}
+          onImpact={traceImpact}
+          onFocus={focusOn}
+          onShowInMap={showInMap}
         />
       </main>
     </div>
   );
 }
 
-function FlowBar({ index, flow, onSelect, onDownstream, onClear }: { index: GraphIndex; flow: FlowState; onSelect: (id: string) => void; onDownstream: () => void; onClear: () => void }) {
-  const name = (id: string | null) => (id ? (index.nodes.get(id)?.name ?? id) : null);
-  const result = flow.result;
-
-  if (flow.question !== null) {
-    const entries = result?.question?.entryPoints ?? [];
-    let status: string;
-    if (flow.loading) status = 'Tracing…';
-    else if (flow.error) status = flow.error;
-    else if (entries.length === 0) status = `Nothing matches "${result?.question?.keywords.join(' ') ?? flow.question}"`;
-    else status = `${result?.reachable?.nodes.length ?? 0} nodes traced from`;
-    return (
-      <div className="flowbar">
-        <span className="flowbar-label">Feature</span>
-        <span className="chip static">{flow.question}</span>
-        <span className={`flowbar-status ${flow.error ? 'error' : ''}`}>{status}</span>
-        {entries.map((id) => (
-          <button key={id} className="link" onClick={() => onSelect(id)}>{name(id)}</button>
+/** Shown in Focus before anything is focused: the most connected code, as a place to start. */
+function FocusPicker({ index, onPick }: { index: GraphIndex; onPick: (id: string) => void }) {
+  const hubs = useMemo(() => {
+    const degree = (id: string) => (index.incoming.get(id)?.length ?? 0) + (index.outgoing.get(id)?.length ?? 0);
+    return [...index.nodes.values()]
+      .filter((node) => node.layer === 'symbol' && node.type !== 'interface' && node.type !== 'type')
+      .sort((a, b) => degree(b.id) - degree(a.id) || a.id.localeCompare(b.id))
+      .slice(0, 12)
+      .map((node) => ({ node, links: degree(node.id) }));
+  }, [index]);
+  return (
+    <div className="canvas-start">
+      <h2>Pick something to focus on</h2>
+      <p>Search for a function, class or file above, double-click one on the map, or start with the most connected code:</p>
+      <ul className="hub-list">
+        {hubs.map(({ node, links }) => (
+          <li key={node.id}>
+            <button onClick={() => onPick(node.id)}>
+              <span className="hub-name">{node.symbol ?? node.name}</span>
+              <span className="muted small">{node.path} · {links} links</span>
+            </button>
+          </li>
         ))}
-        <button onClick={onClear}>Clear</button>
-      </div>
-    );
-  }
-
-  let status: string;
-  if (flow.loading) status = 'Tracing…';
-  else if (flow.error) status = flow.error;
-  else if (result?.reachable) status = `${result.reachable.nodes.length} nodes reachable downstream`;
-  else if (result) status = result.paths.length === 0 ? 'No path found within 8 hops' : `${result.paths.length} shortest path${result.paths.length > 1 ? 's' : ''}, ${result.paths[0]!.edges.length} hops`;
-  else status = flow.from ? 'Pick a target with "Trace to here", or show everything downstream.' : 'Pick a start with "Trace from here".';
-
-  return (
-    <div className="flowbar">
-      <span className="flowbar-label">Flow</span>
-      <button className="chip" disabled={!flow.from} onClick={() => flow.from && onSelect(flow.from)}>{name(flow.from) ?? 'start?'}</button>
-      <span className="arrow">→</span>
-      <button className="chip" disabled={!flow.to} onClick={() => flow.to && onSelect(flow.to)}>{name(flow.to) ?? 'target?'}</button>
-      <span className={`flowbar-status ${flow.error ? 'error' : ''}`}>{status}</span>
-      {result && result.paths.length > 0 && (
-        <span className="flowbar-path">
-          {result.paths[0]!.nodes.map((id, i) => (
-            <span key={id}>
-              {i > 0 && <span className="arrow">→</span>}
-              <button className="link" onClick={() => onSelect(id)}>{name(id)}</button>
-            </span>
-          ))}
-        </span>
-      )}
-      {flow.from && !flow.to && !flow.loading && <button onClick={onDownstream}>Show downstream</button>}
-      <button onClick={onClear}>Clear</button>
-    </div>
-  );
-}
-
-function ImpactBar({ index, impact, onSelect, onClear }: { index: GraphIndex; impact: ImpactState; onSelect: (id: string) => void; onClear: () => void }) {
-  const seed = index.nodes.get(impact.seed);
-  const result = impact.result;
-  let status: string;
-  if (impact.error) status = impact.error;
-  else if (!result) status = 'Tracing…';
-  else if (result.nodes.length === 0) status = 'Nothing depends on it within 4 hops.';
-  else {
-    const { symbols, files, clusters } = result.summary;
-    status = `${count(symbols, 'symbol')} in ${count(files, 'file')} across ${count(clusters, 'cluster')} depend on it:`;
-  }
-  return (
-    <div className="flowbar impactbar">
-      <span className="flowbar-label">Blast radius</span>
-      <button className="chip" onClick={() => onSelect(impact.seed)}>{seed?.symbol ?? seed?.name ?? impact.seed}</button>
-      <span className={`flowbar-status ${impact.error ? 'error' : ''}`}>{status}</span>
-      {result?.files.slice(0, 6).map((file) => (
-        <button key={file.path} className="link" onClick={() => onSelect(file.nodeIds[0]!)} title={`${file.depth} hop${file.depth > 1 ? 's' : ''} away`}>
-          {basename(file.path)}
-        </button>
-      ))}
-      {result && result.files.length > 6 && <span className="muted">+{result.files.length - 6} more</span>}
-      <button onClick={onClear}>Clear</button>
+      </ul>
     </div>
   );
 }
@@ -390,7 +476,7 @@ function SearchBox({ index, onSelect }: { index: GraphIndex; onSelect: (id: stri
     <div className="search">
       <input
         type="search"
-        placeholder="Search files and symbols…"
+        placeholder="Search a function, class or file…"
         value={query}
         onChange={(event) => {
           setQuery(event.target.value);
@@ -423,10 +509,9 @@ function Legend() {
     <div className="legend">
       <span><i className="swatch calls" /> calls</span>
       <span><i className="swatch imports" /> imports</span>
-      <span><i className="swatch heuristic" /> heuristic</span>
-      <span><i className="swatch flow" /> flow</span>
+      <span><i className="swatch heuristic" /> uncertain</span>
       <span><i className="swatch changed" /> changed</span>
-      <span><i className="swatch impact" /> impact</span>
+      <span><i className="swatch impact" /> at risk</span>
     </div>
   );
 }

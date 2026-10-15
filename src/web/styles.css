@@ -293,3 +293,74 @@ button.danger:hover:not(:disabled) { border-color: var(--impact); }
 .snippet .ln { flex: none; width: 46px; padding-right: 12px; text-align: right; color: var(--muted); user-select: none; }
 .snippet code { white-space: pre; }
 .snippet .line:not(.cited) code { color: color-mix(in srgb, var(--text) 80%, var(--muted)); }
+
+/* Mode bar: Map / Focus / Trace, plus the controls for the current mode */
+.modebar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 6px 14px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+  min-height: 42px;
+}
+.tabs { display: flex; gap: 2px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 2px; }
+.tabs button { border: none; background: none; border-radius: 6px; padding: 4px 12px; color: var(--muted); max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tabs button.active { background: var(--surface-2); color: var(--text); box-shadow: inset 0 0 0 1px var(--border); }
+.tabs button:hover:not(:disabled):not(.active) { color: var(--text); }
+.modebar-tools { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.segmented { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); }
+.segmented button { padding: 1px 8px; }
+.segmented button.active { border-color: var(--accent); color: var(--accent); }
+.trace-status { color: var(--muted); }
+.error-text { color: var(--impact); }
+.pick { color: var(--muted); display: inline-flex; gap: 6px; align-items: baseline; flex-wrap: wrap; }
+.pick strong { color: var(--text); font-family: var(--mono); font-weight: 500; }
+button.primary { border-color: var(--accent); color: var(--accent); }
+button.review { border-color: var(--changed); color: var(--changed); }
+.canvas-empty { display: grid; place-items: center; height: 100%; color: var(--muted); }
+.canvas-start { height: 100%; overflow-y: auto; padding: 40px 48px; color: var(--muted); max-width: 760px; }
+.canvas-start h2 { color: var(--text); margin-top: 0; }
+.canvas-start strong { color: var(--text); }
+.hub-list { list-style: none; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 8px; }
+.hub-list button { width: 100%; text-align: left; display: flex; flex-direction: column; gap: 2px; padding: 8px 12px; border-left: 3px solid var(--symbol); }
+.hub-name { font-family: var(--mono); font-weight: 600; color: var(--text); }
+.start-list { padding-left: 18px; color: var(--muted); }
+.start-list li { margin-bottom: 8px; }
+.start-list strong { color: var(--text); }
+
+/* Cards in Focus and Trace views */
+.react-flow__node-card { padding: 0; border: none; background: none; }
+.card {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1px;
+  padding: 0 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--layer-color, var(--border));
+  background: var(--surface);
+  cursor: pointer;
+  overflow: hidden;
+}
+.card.layer-cluster { --layer-color: var(--cluster); }
+.card.layer-file { --layer-color: var(--file); }
+.card.layer-symbol { --layer-color: var(--symbol); }
+.card.layer-external { --layer-color: var(--external); }
+.card.role-center { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent); background: color-mix(in srgb, var(--accent) 8%, var(--surface)); }
+.card.is-selected { border-color: var(--accent); }
+.card.is-changed { background: color-mix(in srgb, var(--changed) 14%, var(--surface)); border-color: var(--changed); }
+.card.is-impacted { background: color-mix(in srgb, var(--impact) 12%, var(--surface)); border-color: color-mix(in srgb, var(--impact) 70%, var(--border)); }
+.card:hover { border-color: var(--accent); }
+.card-top { display: flex; align-items: center; gap: 6px; }
+.card-kind { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; margin-right: auto; }
+.card-name { font-family: var(--mono); font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card-where { font-family: var(--mono); font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card-badge { font-size: 10px; padding: 0 6px; border-radius: 8px; }
+.card-badge.entry { background: var(--flow); color: #0b1a1c; }
+.card-badge.changed { background: var(--changed); color: #1b1b1b; }
+.card-badge.impacted { background: var(--impact); color: #fff; }
+.card-badge.count { background: var(--surface-2); color: var(--muted); border: 1px solid var(--border); }

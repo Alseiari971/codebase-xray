@@ -16,6 +16,8 @@ interface Props {
   onTraceFrom: (id: string) => void;
   onTraceTo: (id: string) => void;
   onImpact: (id: string) => void;
+  onFocus: (id: string) => void;
+  onShowInMap: (id: string) => void;
 }
 
 /** Fetches whenever `key` changes and ignores responses for a key that is no longer current. */
@@ -44,11 +46,14 @@ export function EvidencePanel(props: Props) {
     return (
       <aside className="panel">
         <div className="panel-empty">
-          <h2>Evidence</h2>
-          <p>Click a node to see its source, or an edge to see the exact lines that prove the relationship.</p>
-          <p className="hint">
-            Double-click or press <kbd>+</kbd> to expand a cluster into files and a file into symbols.
-          </p>
+          <h2>Where to start</h2>
+          <ul className="start-list">
+            <li><strong>Search</strong> for a function or file to focus on it: what calls it on the left, what it calls on the right.</li>
+            <li><strong>Trace a feature</strong> with a question like <em>how does login work?</em></li>
+            <li><strong>Review changes</strong> to see your uncommitted edits and what they could break.</li>
+            <li>On the map, press <kbd>+</kbd> to open a cluster, and double-click a file or function to focus on it.</li>
+          </ul>
+          <p className="hint">Click any node for its source code, and any arrow for the exact lines that prove it.</p>
         </div>
       </aside>
     );
@@ -60,7 +65,7 @@ export function EvidencePanel(props: Props) {
   );
 }
 
-function NodeDetails({ id, index, expanded, changedFiles, changedIds, onSelectNode, onToggle, onTraceFrom, onTraceTo, onImpact }: Props & { id: string }) {
+function NodeDetails({ id, index, expanded, changedFiles, changedIds, onSelectNode, onToggle, onTraceFrom, onTraceTo, onImpact, onFocus, onShowInMap }: Props & { id: string }) {
   const node = index.nodes.get(id);
   const evidence = useFetch(id, () => api.nodeEvidence(id));
   if (!node) return <p className="panel-error">Node not found: {id}</p>;
@@ -88,14 +93,16 @@ function NodeDetails({ id, index, expanded, changedFiles, changedIds, onSelectNo
           </p>
         )}
         <div className="panel-actions">
-          {children.length > 0 && (
-            <button onClick={() => onToggle(id)}>{expanded.has(id) ? 'Collapse' : `Expand (${children.length})`}</button>
-          )}
-          <button onClick={() => onTraceFrom(id)}>Trace from here</button>
-          <button onClick={() => onTraceTo(id)}>Trace to here</button>
+          <button className="primary" onClick={() => onFocus(id)} title="Show only this and what it is connected to">
+            Focus
+          </button>
           <button className="danger" onClick={() => onImpact(id)} title="What depends on this, up to 4 hops away">
             Blast radius
           </button>
+          <button onClick={() => onTraceFrom(id)} title="Start a path trace here">Path from</button>
+          <button onClick={() => onTraceTo(id)} title="End a path trace here">Path to</button>
+          <button onClick={() => onShowInMap(id)} title="Show where this sits in the cluster map">On map</button>
+          {children.length > 0 && expanded.has(id) && <button onClick={() => onToggle(id)}>Collapse</button>}
         </div>
       </header>
 
