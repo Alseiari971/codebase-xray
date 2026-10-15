@@ -53,6 +53,8 @@ export interface FileExtraction {
 export interface ParserAdapter {
   readonly name: string;
   supports(language: string): boolean;
+  /** False until an asynchronous setup (loading a parser) has run; see loadParsers(). */
+  ready?(): boolean;
   /**
    * Extracts symbols and edges for `paths`. `indexedPaths` is every file in the
    * index, so edges can point at files and symbols outside `paths`.

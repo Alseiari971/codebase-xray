@@ -30,7 +30,7 @@ test('the Markdown report summarises the repository', () => {
   const report = exportReport(db, root, 'md', NOW);
 
   assert.match(report, /^# Architecture of xray-fixture-\w+\n/);
-  assert.match(report, /on 2026-10-15 from the deterministic evidence graph/);
+  assert.match(report, /on 2026-10-15 from the evidence graph \(built by parsers, no AI\)/);
   const summary = section(report, 'Summary');
   assert.match(summary, /\| Files \| Symbols \| Clusters \| Import edges \| Call edges \| External packages \|/);
   assert.match(summary, /\| 11 \| 12 \| 8 \| 9 \| 13 \| 3 \|/);

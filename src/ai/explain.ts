@@ -131,7 +131,7 @@ export function buildEvidencePackage(db: XrayDb, root: string, question: string)
   };
 }
 
-export const SYSTEM_PROMPT = `You explain how a codebase works, using ONLY the evidence you are given. The evidence was extracted deterministically from the repository by Codebase X-Ray (the TypeScript compiler, not guesses).
+export const SYSTEM_PROMPT = `You explain how a codebase works, using ONLY the evidence you are given. The evidence was extracted from the repository by Codebase X-Ray's parsers, not by a model.
 
 Rules:
 - Cite every factual claim inline, in square brackets, with ids that appear in the evidence: node ids such as [sym:src/auth/login.ts#login] or [file:src/auth/login.ts], edges as [edge:12], evidence as [evidence:34].

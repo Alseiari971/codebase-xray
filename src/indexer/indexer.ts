@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
-import type { FileExtraction, ParserAdapter } from '../adapters/types.ts';
-import { typescriptAdapter } from '../adapters/typescript.ts';
+import type { FileExtraction } from '../adapters/types.ts';
+import { ADAPTERS } from '../adapters/index.ts';
 import { getMeta, setMeta, type XrayDb } from '../db/database.ts';
 import { fileNodeId } from '../graph/ids.ts';
 import { clusterFiles } from './cluster.ts';
@@ -11,12 +11,11 @@ import { scanRepository, type ScannedFile } from './scan.ts';
 export { fileNodeId };
 
 /** Bump whenever adapter output changes, so existing indexes are rebuilt rather than mixed. */
-export const EXTRACTOR_VERSION = '1';
+export const EXTRACTOR_VERSION = '2'; // 2: C/C++ and Python adapters
 
 /** Changes to these files can change how every import resolves. */
 const PROJECT_CONFIG_FILES = ['tsconfig.json', 'jsconfig.json', 'package.json'];
 
-const ADAPTERS: ParserAdapter[] = [typescriptAdapter];
 
 export interface IndexOptions {
   /** Re-extract every file even if nothing changed. */
@@ -65,7 +64,11 @@ export function indexRepository(db: XrayDb, root: string, options: IndexOptions 
   const extractions: FileExtraction[] = [];
   for (const adapter of ADAPTERS) {
     const paths = dirty.filter((path) => adapter.supports(languageOf.get(path) ?? '')).sort();
-    if (paths.length > 0) extractions.push(...adapter.extract(root, paths, indexedPaths));
+    if (paths.length === 0) continue;
+    if (adapter.ready && !adapter.ready()) {
+      throw new Error(`The ${adapter.name} parser is not loaded: await loadParsers() before indexing.`);
+    }
+    extractions.push(...adapter.extract(root, paths, indexedPaths));
   }
 
   // One transaction: if extraction or writing fails, file hashes are not

@@ -24,6 +24,9 @@ const ALWAYS_IGNORED = [
   '.git/', 'node_modules/', '.xray/',
   '.next/', '.nuxt/', '.svelte-kit/', '.turbo/', '.vercel/', 'coverage/',
   '*.min.js', '*.min.css',
+  // Vendored dependencies, and Python and CMake build output.
+  '3rdparty/', 'third_party/', 'thirdparty/', 'vendor/',
+  '__pycache__/', '.venv/', 'venv/', '.tox/', '.mypy_cache/', '.pytest_cache/', 'cmake-build-*/',
 ];
 
 /** Ignore rules from one .gitignore; patterns are relative to `base`. */
@@ -37,6 +40,9 @@ const LANGUAGE_BY_EXTENSION: Record<string, string> = {
   '.js': 'javascript', '.jsx': 'javascript', '.mjs': 'javascript', '.cjs': 'javascript',
   '.json': 'json',
   '.py': 'python',
+  '.c': 'c', '.h': 'cpp',
+  '.cc': 'cpp', '.cpp': 'cpp', '.cxx': 'cpp', '.c++': 'cpp',
+  '.hh': 'cpp', '.hpp': 'cpp', '.hxx': 'cpp', '.h++': 'cpp', '.inl': 'cpp', '.ipp': 'cpp', '.tpp': 'cpp',
   '.go': 'go',
   '.rs': 'rust',
   '.java': 'java',

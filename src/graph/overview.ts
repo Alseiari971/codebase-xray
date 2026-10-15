@@ -9,7 +9,7 @@ import type { Overview, Tour } from '../shared/api-types.ts';
 import { fileNodeId } from './ids.ts';
 
 export const TEST_PATH = /(^|\/)(test|tests|__tests__|fixtures)\/|\.(test|spec)\.[cm]?[jt]sx?$/;
-const CODE_LANGUAGES = new Set(['typescript', 'javascript']);
+const CODE_LANGUAGES = new Set(['typescript', 'javascript', 'python', 'c', 'cpp']);
 /** Types describe code; tours and previews should land on code that runs. */
 const RUNNABLE = "n.type NOT IN ('interface', 'type')";
 
@@ -17,6 +17,10 @@ const MAX_TOURS = 8;
 const BRANCHES = 4;
 /** Folders that hold a whole app rather than one area; tours there are named after the file. */
 const SOURCE_ROOTS = new Set(['', 'src', 'lib', 'app', 'source', 'packages']);
+/** Folder names that say where code sits, not what it does (C/C++ libraries keep src/ and include/ per library). */
+const GENERIC_FOLDERS = new Set([...SOURCE_ROOTS, 'include', 'inc', 'impl', 'internal', 'detail', 'details', 'private', 'public', 'core']);
+/** Only links this sure shape the main path; name-only guesses across a C++ codebase would send it astray. */
+const PATH_MIN_CONFIDENCE = 0.8;
 const MAX_CHAIN = 4;
 
 export interface EntryPoint {
@@ -59,6 +63,7 @@ function fileGraph(db: XrayDb): Map<string, Map<string, number[]>> {
       `SELECT e.id, s.path AS source, t.path AS target FROM edges e
        JOIN nodes s ON s.id = e.source JOIN nodes t ON t.id = e.target
        WHERE s.path IS NOT NULL AND t.path IS NOT NULL AND s.path != t.path AND t.layer IN ('file', 'symbol')
+         AND e.confidence >= ${PATH_MIN_CONFIDENCE}
        ORDER BY e.id`,
     )
     .all() as { id: number; source: string; target: string }[];
@@ -91,8 +96,14 @@ export function mainEntry(db: XrayDb, root: string, entries: EntryPoint[], reach
       // An unreadable package.json just means no hint.
     }
   }
-  const best = [...entries].sort((a, b) => reach(b.path) - reach(a.path) || b.uses - a.uses || a.path.localeCompare(b.path))[0];
-  return best && reach(best.path) > 0 ? best.id : null;
+  // C/C++ (and many scripts) start in a function called main.
+  const withMain = new Set(
+    db.prepare("SELECT path FROM nodes WHERE layer = 'symbol' AND name = 'main' AND type = 'function'").pluck().all() as string[],
+  );
+  const best = [...entries].sort(
+    (a, b) => Number(withMain.has(b.path)) - Number(withMain.has(a.path)) || reach(b.path) - reach(a.path) || b.uses - a.uses || a.path.localeCompare(b.path),
+  )[0];
+  return best && (reach(best.path) > 0 || withMain.has(best.path)) ? best.id : null;
 }
 
 /**
@@ -179,17 +190,21 @@ export function tours(db: XrayDb, mainPathFiles: string[] = []): Tour[] {
   const folderOf = (path: string) => (path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '');
   const onPath = [...new Set(mainPathFiles.map((id) => folderOf(id.slice('file:'.length))))].filter((folder) => byFolder.has(folder));
   const rest = [...byFolder.keys()].filter((folder) => !onPath.includes(folder)).sort((a, b) => byFolder.get(b)! - byFolder.get(a)! || a.localeCompare(b));
-  return [...onPath, ...rest]
-    .map((folder) => [folder] as const)
-    .slice(0, MAX_TOURS)
-    .flatMap(([folder]) => {
-      const [hub] = hubs(db, folder ? "n.path LIKE ? || '/%' AND n.path NOT LIKE ? || '/%/%'" : "n.path NOT LIKE '%/%'", folder ? [folder, folder] : [], 1);
-      if (!hub) return [];
-      const label = SOURCE_ROOTS.has(folder)
-        ? hub.path.slice(hub.path.lastIndexOf('/') + 1).replace(/\.[^.]+$/, '')
-        : folder.slice(folder.lastIndexOf('/') + 1);
-      return [{ id: `tour:${folder || '.'}`, title: `Tour: ${label}`, folder, target: hub.id, start: hub.name, path: hub.path }];
-    });
+  const list: Tour[] = [];
+  const titles = new Set<string>();
+  for (const folder of [...onPath, ...rest]) {
+    if (list.length >= MAX_TOURS) break;
+    const [hub] = hubs(db, folder ? "n.path LIKE ? || '/%' AND n.path NOT LIKE ? || '/%/%'" : "n.path NOT LIKE '%/%'", folder ? [folder, folder] : [], 1);
+    if (!hub) continue;
+    // The nearest folder name that says what the code does, else the main file's name.
+    const named = folder.split('/').filter((part) => part && !GENERIC_FOLDERS.has(part)).at(-1);
+    const title = `Tour: ${named ?? hub.path.slice(hub.path.lastIndexOf('/') + 1).replace(/\.[^.]+$/, '')}`;
+    // A library's src/ and include/ share a name; one tour per name.
+    if (titles.has(title)) continue;
+    titles.add(title);
+    list.push({ id: `tour:${folder || '.'}`, title, folder, target: hub.id, start: hub.name, path: hub.path });
+  }
+  return list;
 }
 
 /** Each cluster's two most-used runnable symbols, shown inside its box on the map. */
