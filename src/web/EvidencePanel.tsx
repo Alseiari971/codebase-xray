@@ -1,0 +1,278 @@
+import { useEffect, useState } from 'react';
+import type { ChangedFile, GraphEdge, GraphNode, ResolutionType, Snippet } from '../shared/api-types.ts';
+import { api } from './api.ts';
+import type { GraphIndex, VisibleEdge } from './model.ts';
+
+export type Selection = { kind: 'node'; id: string } | { kind: 'edge'; edge: VisibleEdge } | null;
+
+interface Props {
+  index: GraphIndex;
+  selection: Selection;
+  expanded: ReadonlySet<string>;
+  changedFiles: Map<string, ChangedFile>;
+  changedIds: ReadonlySet<string>;
+  onSelectNode: (id: string) => void;
+  onToggle: (id: string) => void;
+  onTraceFrom: (id: string) => void;
+  onTraceTo: (id: string) => void;
+}
+
+/** Fetches whenever `key` changes and ignores responses for a key that is no longer current. */
+function useFetch<T>(key: string | null, load: () => Promise<T>): { data: T | null; error: string | null; loading: boolean } {
+  const [state, setState] = useState<{ key: string | null; data: T | null; error: string | null }>({ key: null, data: null, error: null });
+  useEffect(() => {
+    if (key === null) return;
+    let current = true;
+    load().then(
+      (data) => current && setState({ key, data, error: null }),
+      (error: unknown) => current && setState({ key, data: null, error: error instanceof Error ? error.message : String(error) }),
+    );
+    return () => {
+      current = false;
+    };
+    // `load` is derived from `key`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+  const fresh = state.key === key;
+  return { data: fresh ? state.data : null, error: fresh ? state.error : null, loading: key !== null && !fresh };
+}
+
+export function EvidencePanel(props: Props) {
+  const { selection } = props;
+  if (!selection) {
+    return (
+      <aside className="panel">
+        <div className="panel-empty">
+          <h2>Evidence</h2>
+          <p>Click a node to see its source, or an edge to see the exact lines that prove the relationship.</p>
+          <p className="hint">
+            Double-click or press <kbd>+</kbd> to expand a cluster into files and a file into symbols.
+          </p>
+        </div>
+      </aside>
+    );
+  }
+  return (
+    <aside className="panel">
+      {selection.kind === 'node' ? <NodeDetails {...props} id={selection.id} /> : <EdgeDetails {...props} edge={selection.edge} />}
+    </aside>
+  );
+}
+
+function NodeDetails({ id, index, expanded, changedFiles, changedIds, onSelectNode, onToggle, onTraceFrom, onTraceTo }: Props & { id: string }) {
+  const node = index.nodes.get(id);
+  const evidence = useFetch(id, () => api.nodeEvidence(id));
+  if (!node) return <p className="panel-error">Node not found: {id}</p>;
+
+  const children = index.children.get(id) ?? [];
+  const outgoing = index.outgoing.get(id) ?? [];
+  const incoming = index.incoming.get(id) ?? [];
+  const change = node.path ? changedFiles.get(node.path) : undefined;
+
+  return (
+    <>
+      <header className="panel-header">
+        <div className="panel-kicker">
+          <span className={`pill layer-${node.layer}`}>{node.layer === 'symbol' ? node.type : node.layer}</span>
+          {changedIds.has(id) && <span className="pill changed">changed{change ? ` (${change.status})` : ''}</span>}
+        </div>
+        <h2>{node.symbol ?? node.name}</h2>
+        {node.path && (
+          <p className="panel-path">
+            {node.path}
+            {node.startLine ? `:${node.startLine}-${node.endLine}` : ''}
+          </p>
+        )}
+        <div className="panel-actions">
+          {children.length > 0 && (
+            <button onClick={() => onToggle(id)}>{expanded.has(id) ? 'Collapse' : `Expand (${children.length})`}</button>
+          )}
+          <button onClick={() => onTraceFrom(id)}>Trace from here</button>
+          <button onClick={() => onTraceTo(id)}>Trace to here</button>
+        </div>
+      </header>
+
+      {change?.indexStale && (
+        <p className="notice">This file changed since it was indexed. Re-run <code>xray index</code> for exact line mapping.</p>
+      )}
+
+      <Section title="Source">
+        {evidence.loading && <p className="muted">Loading…</p>}
+        {evidence.error && <p className="panel-error">{evidence.error}</p>}
+        {evidence.data && evidence.data.snippets.length === 0 && (
+          <p className="muted">{node.layer === 'cluster' ? 'A cluster groups files; expand it or pick a file below.' : 'No source lines for this node.'}</p>
+        )}
+        {evidence.data?.snippets.map((snippet, i) => <SnippetView key={i} snippet={snippet} />)}
+      </Section>
+
+      {children.length > 0 && (
+        <Section title={`Contains (${children.length})`}>
+          <NodeList nodes={children} onSelect={onSelectNode} changedIds={changedIds} />
+        </Section>
+      )}
+      <Connections title="Depends on" edges={outgoing} side="target" index={index} onSelect={onSelectNode} />
+      <Connections title="Used by" edges={incoming} side="source" index={index} onSelect={onSelectNode} />
+    </>
+  );
+}
+
+function EdgeDetails({ edge, index, onSelectNode }: Props & { edge: VisibleEdge }) {
+  const source = index.nodes.get(edge.source);
+  const target = index.nodes.get(edge.target);
+  const shown = edge.edgeIds.slice(0, 10);
+
+  return (
+    <>
+      <header className="panel-header">
+        <div className="panel-kicker">
+          {edge.relations.map((relation) => (
+            <span key={relation} className="pill">{relation}</span>
+          ))}
+          <TrustBadge type={edge.resolutionType} confidence={edge.confidence} />
+        </div>
+        <h2 className="edge-title">
+          <button className="link" onClick={() => onSelectNode(edge.source)}>{source?.name}</button>
+          <span className="arrow">→</span>
+          <button className="link" onClick={() => onSelectNode(edge.target)}>{target?.name}</button>
+        </h2>
+        {edge.edgeIds.length > 1 && (
+          <p className="muted">
+            Rolled up from {edge.edgeIds.length} relationships between the nodes inside
+            {edge.deterministicCount < edge.edgeIds.length
+              ? `: ${edge.deterministicCount} deterministic, ${edge.edgeIds.length - edge.deterministicCount} uncertain`
+              : ''}
+            .{edge.edgeIds.length > shown.length ? ` Showing the first ${shown.length}.` : ''}
+          </p>
+        )}
+      </header>
+      {shown.map((edgeId) => (
+        <UnderlyingEdge key={edgeId} edge={index.edgesById.get(edgeId)!} index={index} onSelectNode={onSelectNode} />
+      ))}
+    </>
+  );
+}
+
+function UnderlyingEdge({ edge, index, onSelectNode }: { edge: GraphEdge; index: GraphIndex; onSelectNode: (id: string) => void }) {
+  const evidence = useFetch(String(edge.id), () => api.edgeEvidence(edge.id));
+  const members = Array.isArray(edge.metadata.members) ? (edge.metadata.members as string[]) : [];
+  return (
+    <section className="section">
+      <div className="underlying-title">
+        <button className="link" onClick={() => onSelectNode(edge.source)}>{label(index.nodes.get(edge.source))}</button>
+        <span className="arrow">{edge.relation === 'imports' ? 'imports' : 'calls'}</span>
+        <button className="link" onClick={() => onSelectNode(edge.target)}>{label(index.nodes.get(edge.target))}</button>
+        {members.length > 0 && <span className="muted"> ({members.join(', ')})</span>}
+        <TrustBadge type={edge.resolutionType} confidence={edge.confidence} />
+      </div>
+      {evidence.loading && <p className="muted">Loading…</p>}
+      {evidence.error && <p className="panel-error">{evidence.error}</p>}
+      {evidence.data?.snippets.map((snippet, i) => <SnippetView key={i} snippet={snippet} />)}
+    </section>
+  );
+}
+
+function SnippetView({ snippet }: { snippet: Snippet }) {
+  const first = snippet.lines[0]?.number ?? 1;
+  const last = snippet.lines.at(-1)?.number ?? 1;
+  const wholeFile = snippet.rule === null && snippet.startLine === 1 && first === 1 && (snippet.truncated || last === snippet.endLine);
+  return (
+    <figure className="snippet">
+      <figcaption>
+        <span className="snippet-path">
+          {snippet.filePath}:{snippet.startLine}
+          {snippet.endLine !== snippet.startLine ? `-${snippet.endLine}` : ''}
+        </span>
+        {snippet.rule && <span className="pill subtle">{snippet.rule}</span>}
+        {snippet.stale && <span className="pill warn" title="The file changed since indexing; these lines may have moved.">stale</span>}
+      </figcaption>
+      <pre>
+        {snippet.lines.map((line) => {
+          const cited = !wholeFile && line.number >= snippet.startLine && line.number <= snippet.endLine;
+          return (
+            <div key={line.number} className={cited ? 'line cited' : 'line'}>
+              <span className="ln">{line.number}</span>
+              <code>{line.text || ' '}</code>
+            </div>
+          );
+        })}
+      </pre>
+      {snippet.truncated && <p className="muted small">Truncated. Open the file for the rest.</p>}
+    </figure>
+  );
+}
+
+const TRUST_LABEL: Record<ResolutionType, string> = {
+  deterministic: 'Deterministic',
+  heuristic: 'Heuristic',
+  runtime_observed: 'Runtime observed',
+  ai_inferred: 'AI inferred',
+};
+
+function TrustBadge({ type, confidence }: { type: ResolutionType; confidence: number }) {
+  return (
+    <span className={`pill trust-${type}`} title={`Resolution: ${type}, confidence ${confidence}`}>
+      {TRUST_LABEL[type]}
+      {confidence < 1 ? ` · ${Math.round(confidence * 100)}%` : ''}
+    </span>
+  );
+}
+
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <section className="section">
+      <h3>{title}</h3>
+      {children}
+    </section>
+  );
+}
+
+const LIST_LIMIT = 40;
+
+function NodeList({ nodes, onSelect, changedIds }: { nodes: GraphNode[]; onSelect: (id: string) => void; changedIds: ReadonlySet<string> }) {
+  return (
+    <ul className="node-list">
+      {nodes.slice(0, LIST_LIMIT).map((node) => (
+        <li key={node.id}>
+          <button className="link" onClick={() => onSelect(node.id)}>
+            <span className={`dot layer-${node.layer}`} />
+            {node.layer === 'symbol' ? `${node.name}` : node.name}
+            <span className="muted small"> {node.layer === 'symbol' ? node.type : node.layer}</span>
+            {changedIds.has(node.id) && <span className="pill changed small">changed</span>}
+          </button>
+        </li>
+      ))}
+      {nodes.length > LIST_LIMIT && <li className="muted small">…and {nodes.length - LIST_LIMIT} more</li>}
+    </ul>
+  );
+}
+
+function Connections({ title, edges, side, index, onSelect }: { title: string; edges: GraphEdge[]; side: 'source' | 'target'; index: GraphIndex; onSelect: (id: string) => void }) {
+  if (edges.length === 0) return null;
+  return (
+    <Section title={`${title} (${edges.length})`}>
+      <ul className="node-list">
+        {edges.slice(0, LIST_LIMIT).map((edge) => {
+          const other = index.nodes.get(edge[side]);
+          return (
+            <li key={edge.id}>
+              <button className="link" onClick={() => onSelect(edge[side])}>
+                <span className={`dot layer-${other?.layer ?? 'external'}`} />
+                {label(other)}
+                <span className="muted small"> {edge.relation}</span>
+                {edge.resolutionType !== 'deterministic' && <span className={`pill small trust-${edge.resolutionType}`}>{TRUST_LABEL[edge.resolutionType]}</span>}
+              </button>
+            </li>
+          );
+        })}
+        {edges.length > LIST_LIMIT && <li className="muted small">…and {edges.length - LIST_LIMIT} more</li>}
+      </ul>
+    </Section>
+  );
+}
+
+function label(node: GraphNode | undefined): string {
+  if (!node) return '?';
+  if (node.layer === 'symbol') return node.symbol ?? node.name;
+  if (node.layer === 'file') return node.path ?? node.name;
+  return node.name;
+}

@@ -2,15 +2,18 @@ import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { main } from '../src/cli.ts';
+import { main, type Io } from '../src/cli.ts';
 import { makeRepo } from './helpers.ts';
 
-async function run(...argv: string[]) {
+async function runWith(untilShutdown: Io['untilShutdown'], ...argv: string[]) {
   const out: string[] = [];
   const err: string[] = [];
-  const code = await main(argv, { out: (line) => out.push(line), err: (line) => err.push(line) });
+  const code = await main(argv, { out: (line) => out.push(line), err: (line) => err.push(line), untilShutdown });
   return { code, out: out.join('\n'), err: err.join('\n') };
 }
+
+/** Any `serve` started by these tests shuts down straight away. */
+const run = (...argv: string[]) => runWith(async () => {}, ...argv);
 
 test('--help lists every command', async () => {
   const { code, out } = await run('--help');
@@ -73,18 +76,48 @@ test('serve, diff and mcp require an index first', async () => {
   }
 });
 
-test('serve, diff and mcp report they are not implemented yet', async () => {
+test('mcp reports it is not implemented yet', async () => {
   const root = makeRepo({ 'a.ts': '' });
   await run('index', root);
-  for (const argv of [['serve', root], ['diff', root], ['mcp', root], ['diff', '--uncommitted', root]]) {
-    const { code, err } = await run(...argv);
-    assert.equal(code, 1, argv.join(' '));
-    assert.match(err, /not implemented yet/);
-  }
+  const { code, err } = await run('mcp', root);
+  assert.equal(code, 1);
+  assert.match(err, /not implemented yet/);
 });
 
-test('a bare <path> indexes the repository', async () => {
+test('serve runs the UI and API until shutdown', async () => {
+  const root = makeRepo({ 'src/a.ts': 'export function a() {}\n' });
+  await run('index', root);
+
+  let graphStatus = 0;
+  let page = '';
+  const { code, out } = await runWith(
+    async (server) => {
+      graphStatus = (await fetch(`${server.url}/api/graph`)).status;
+      page = await (await fetch(server.url)).text();
+    },
+    'serve',
+    root,
+    '--port',
+    '0',
+  );
+
+  assert.equal(code, 0);
+  assert.match(out, /running at http:\/\/localhost:\d+/);
+  assert.equal(graphStatus, 200);
+  assert.match(page, /<div id="root">/);
+});
+
+test('a bare <path> indexes, then serves', async () => {
   const root = makeRepo({ 'a.ts': '' });
-  const { out } = await run(root);
-  assert.match(out, /Indexed 1 files/);
+  const { code, out } = await run(root, '--port', '0');
+  assert.equal(code, 0);
+  assert.match(out, /Indexed 1 files[\s\S]*running at/);
+});
+
+test('diff outside a git repository is an error', async () => {
+  const root = makeRepo({ 'a.ts': '' });
+  await run('index', root);
+  const { code, err } = await run('diff', root);
+  assert.equal(code, 1);
+  assert.match(err, /not inside a git repository/);
 });

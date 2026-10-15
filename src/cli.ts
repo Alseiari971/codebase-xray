@@ -2,11 +2,23 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { openDatabase } from './db/database.ts';
+import { getDiff } from './git/diff.ts';
 import { indexRepository } from './indexer/indexer.ts';
+import { bundleClient } from './server/bundle.ts';
+import { startServer, type RunningServer } from './server/server.ts';
 
 export interface Io {
   out: (line: string) => void;
   err: (line: string) => void;
+  /** Resolves when `serve` should stop. Defaults to Ctrl+C / SIGTERM. */
+  untilShutdown?: (server: RunningServer) => Promise<void>;
+}
+
+function waitForSignal(): Promise<void> {
+  return new Promise((resolve) => {
+    process.once('SIGINT', () => resolve());
+    process.once('SIGTERM', () => resolve());
+  });
 }
 
 const defaultIo: Io = {
@@ -20,7 +32,7 @@ Usage:
   xray <path>                 Index <path>, then serve the map
   xray index <path>           Build or refresh the evidence graph for <path>
   xray serve <path>           Start the local web UI and HTTP/JSON API
-  xray diff [path]            Overlay uncommitted changes on the map (alias: xray --uncommitted)
+  xray diff [path]            List uncommitted changes and the symbols they touch (alias: xray --uncommitted)
   xray mcp <path>             Start the read-only MCP server for coding agents
 
 Options:
@@ -67,7 +79,7 @@ export async function main(argv: string[] = process.argv.slice(2), io: Io = defa
       case 'index':
         return index(rest, values, io);
       case 'serve':
-        return serve(rest, values, io);
+        return await serve(rest, values, io);
       case 'diff':
         return diff(rest, values, io);
       case 'mcp':
@@ -76,7 +88,7 @@ export async function main(argv: string[] = process.argv.slice(2), io: Io = defa
         // `xray ./my-project` is the blueprint's one-shot entry point.
         if (rest.length === 0 && isDirectory(command)) {
           const code = index([command], values, io);
-          return code === 0 ? serve([command], values, io) : code;
+          return code === 0 ? await serve([command], values, io) : code;
         }
         throw new UsageError(`Unknown command or directory: ${command}`);
     }
@@ -116,19 +128,59 @@ function index(args: string[], values: Values, io: Io): number {
   }
 }
 
-function serve(args: string[], values: Values, io: Io): number {
+async function serve(args: string[], values: Values, io: Io): Promise<number> {
   const root = requireRepo(args, 'serve');
   const port = Number(values.port);
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new UsageError(`Invalid --port: ${values.port}`);
-  requireIndex(root, values);
-  return notImplemented('serve', io);
+  const db = openDatabase(requireIndex(root, values));
+  try {
+    const server = await startServer({ db, root, port }).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'EADDRINUSE') throw new Error(`Port ${port} is already in use. Try --port ${port + 1}, or --port 0 for any free port.`);
+      throw error;
+    });
+    try {
+      await bundleClient(); // fail now rather than on the first page load
+      io.out(`Codebase X-Ray is running at ${server.url}`);
+      io.out('Press Ctrl+C to stop.');
+      await (io.untilShutdown ?? waitForSignal)(server);
+    } finally {
+      await server.close();
+    }
+    return 0;
+  } finally {
+    db.close();
+  }
 }
+
+const STATUS_LETTER = { added: 'A', modified: 'M', deleted: 'D', renamed: 'R', untracked: '?' } as const;
 
 function diff(args: string[], values: Values, io: Io): number {
   const root = resolve(optionalSingle(args, 'diff') ?? '.');
   if (!isDirectory(root)) throw new UsageError(`Not a directory: ${root}`);
-  requireIndex(root, values);
-  return notImplemented('diff', io);
+  const db = openDatabase(requireIndex(root, values));
+  try {
+    const base = values.base ?? 'HEAD';
+    const result = getDiff(db, root, base);
+    if (!result.isRepo) throw new Error(`${root} is not inside a git repository.`);
+    if (result.files.length === 0) {
+      io.out(`No uncommitted changes against ${base}.`);
+      return 0;
+    }
+
+    const symbolCount = result.files.reduce((sum, file) => sum + file.symbolIds.length, 0);
+    io.out(`${result.files.length} files changed, ${symbolCount} symbols touched (against ${base}):`);
+    for (const file of result.files) {
+      const from = file.oldPath ? ` (from ${file.oldPath})` : '';
+      io.out(`  ${STATUS_LETTER[file.status]} ${file.path}${from}${file.indexStale ? '  [index stale]' : ''}`);
+      for (const id of file.symbolIds) io.out(`      ${id.slice(id.indexOf('#') + 1)}`);
+    }
+    if (result.files.some((file) => file.indexStale)) {
+      io.out('Some files changed since the last index; run `xray index` for exact symbol mapping.');
+    }
+    return 0;
+  } finally {
+    db.close();
+  }
 }
 
 function mcp(args: string[], values: Values, io: Io): number {

@@ -34,3 +34,4 @@ jobs:
         run: |
           node bin/xray.js --help
           node bin/xray.js index .
+          node bin/xray.js diff .
