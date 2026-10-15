@@ -6,7 +6,7 @@ import { after, before, describe, test } from 'node:test';
 import { openDatabase, type XrayDb } from '../src/db/database.ts';
 import { indexRepository } from '../src/indexer/indexer.ts';
 import { startServer, type RunningServer } from '../src/server/server.ts';
-import type { EdgeEvidenceResponse, FlowResponse, GraphResponse, NodeEvidenceResponse } from '../src/shared/api-types.ts';
+import type { EdgeEvidenceResponse, FlowResponse, GraphResponse, ImpactResponse, NodeEvidenceResponse } from '../src/shared/api-types.ts';
 import { copyFixture } from './helpers.ts';
 
 let root: string;
@@ -178,6 +178,16 @@ describe('POST /api/flow', () => {
     ]);
   });
 
+  test('answers a question by tracing from matching entry points', async () => {
+    const { status, body } = await post<FlowResponse>('/api/flow', { question: 'How does login work?' });
+    assert.equal(status, 200);
+    assert.deepEqual(body.question!.keywords, ['login']);
+    assert.deepEqual(body.question!.entryPoints, ['sym:src/api/routes.ts#handleLogin', 'sym:src/ui/LoginForm.tsx#LoginForm']);
+    assert.ok(body.reachable!.nodes.includes('ext:npm:bcrypt'));
+    assert.equal((await post('/api/flow', { question: 'how does it work?' })).status, 400);
+    assert.equal((await post('/api/flow', { question: 42 })).status, 400);
+  });
+
   test('rejects bad requests', async () => {
     assert.equal((await post('/api/flow', { to: 'x' })).status, 400);
     assert.equal((await post('/api/flow', { from: 'file:src/index.ts', maxDepth: -1 })).status, 400);
@@ -186,11 +196,33 @@ describe('POST /api/flow', () => {
   });
 });
 
+describe('POST /api/impact', () => {
+  test('returns the blast radius of a node', async () => {
+    const { status, body } = await post<ImpactResponse>('/api/impact', { ids: ['sym:src/auth/hash.ts#hashPassword'] });
+    assert.equal(status, 200);
+    assert.deepEqual(body.files.map((file) => file.path), ['src/auth/login.ts', 'src/api/routes.ts', 'src/api/server.js']);
+    assert.deepEqual(body.summary, { symbols: 2, files: 3, clusters: 2, externals: 0 });
+  });
+
+  test('can look downstream and limit depth', async () => {
+    const { body } = await post<ImpactResponse>('/api/impact', { ids: ['sym:src/auth/login.ts#login'], direction: 'downstream', maxDepth: 1, relations: ['calls'] });
+    assert.deepEqual(body.nodes.map((node) => node.direction), ['downstream', 'downstream', 'downstream']);
+  });
+
+  test('rejects bad requests', async () => {
+    assert.equal((await post('/api/impact', {})).status, 400);
+    assert.equal((await post('/api/impact', { ids: [] })).status, 400);
+    assert.equal((await post('/api/impact', { ids: ['file:src/index.ts'], direction: 'sideways' })).status, 400);
+    assert.equal((await post('/api/impact', { ids: ['file:nope.ts'] })).status, 404);
+  });
+});
+
 describe('GET /api/diff', () => {
   test('reports a folder outside git as not a repository', async () => {
-    const { status, body } = await get<{ isRepo: boolean; files: unknown[] }>('/api/diff');
+    const { status, body } = await get<{ isRepo: boolean; files: unknown[]; nodeIds: string[] }>('/api/diff');
     assert.equal(status, 200);
-    assert.deepEqual(body, { isRepo: false, base: 'HEAD', files: [], nodeIds: [] });
+    assert.equal(body.isRepo, false);
+    assert.deepEqual([body.files, body.nodeIds], [[], []]);
   });
 });
 

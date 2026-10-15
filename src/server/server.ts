@@ -2,9 +2,9 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import type { AddressInfo } from 'node:net';
 import type { XrayDb } from '../db/database.ts';
 import { DiffBaseError, getDiff } from '../git/diff.ts';
-import type { ApiError, FlowRequest } from '../shared/api-types.ts';
+import type { ApiError, FlowRequest, ImpactRequest } from '../shared/api-types.ts';
 import { bundleClient } from './bundle.ts';
-import { FlowRequestError, traceFlow } from './flow.ts';
+import { FlowRequestError, traceFlow, traceImpact } from './flow.ts';
 import { getEdgeEvidence, getGraph, getNodeEvidence, NotFoundError } from './queries.ts';
 
 export interface ServerOptions {
@@ -86,6 +86,11 @@ export function startServer(options: ServerOptions): Promise<RunningServer> {
       method: 'POST',
       pattern: /^\/api\/flow$/,
       handle: async (_match, req) => json(traceFlow(db, (await readJson(req)) as FlowRequest)),
+    },
+    {
+      method: 'POST',
+      pattern: /^\/api\/impact$/,
+      handle: async (_match, req) => json(traceImpact(db, (await readJson(req)) as ImpactRequest)),
     },
     {
       method: 'GET',

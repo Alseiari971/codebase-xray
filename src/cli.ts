@@ -1,9 +1,14 @@
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
-import { openDatabase } from './db/database.ts';
-import { getDiff } from './git/diff.ts';
+import { openDatabase, type XrayDb } from './db/database.ts';
+import { DEFAULT_DIFF_IMPACT_DEPTH, getDiff } from './git/diff.ts';
+import { fileNodeId } from './graph/ids.ts';
+import { blastRadius, DEFAULT_IMPACT_DEPTH } from './graph/impact.ts';
+import { traceQuestion } from './graph/question.ts';
 import { indexRepository } from './indexer/indexer.ts';
+import { DEFAULT_QUESTION_DEPTH } from './server/flow.ts';
+import { describeNodes, diffLines, flowTree, impactLines, impactSummary, label } from './report.ts';
 import { bundleClient } from './server/bundle.ts';
 import { startServer, type RunningServer } from './server/server.ts';
 
@@ -32,7 +37,10 @@ Usage:
   xray <path>                 Index <path>, then serve the map
   xray index <path>           Build or refresh the evidence graph for <path>
   xray serve <path>           Start the local web UI and HTTP/JSON API
-  xray diff [path]            List uncommitted changes and the symbols they touch (alias: xray --uncommitted)
+  xray diff [path]            Uncommitted changes, the symbols they touch, and what depends on them
+                              (alias: xray --uncommitted)
+  xray flow <question> [path] Trace a feature, e.g. xray flow "how does checkout work?"
+  xray impact <target> [path] Blast radius of a file, symbol or node id: what depends on it
   xray mcp <path>             Start the read-only MCP server for coding agents
 
 Options:
@@ -40,6 +48,8 @@ Options:
   --full                      Re-extract every file instead of only changed ones
   --port <number>             Port for \`serve\` (default: 4173)
   --base <ref>                Git ref to diff against (default: working tree vs HEAD)
+  --depth <number>            Hops to follow for diff, flow and impact (defaults: 3, 5, 4)
+  --direction <dir>           For impact: upstream (default), downstream or both
   -h, --help                  Show this help
   -v, --version               Show the version`;
 
@@ -48,6 +58,8 @@ const OPTIONS = {
   full: { type: 'boolean', default: false },
   port: { type: 'string', default: '4173' },
   base: { type: 'string' },
+  depth: { type: 'string' },
+  direction: { type: 'string', default: 'upstream' },
   uncommitted: { type: 'boolean', default: false },
   help: { type: 'boolean', short: 'h', default: false },
   version: { type: 'boolean', short: 'v', default: false },
@@ -82,6 +94,10 @@ export async function main(argv: string[] = process.argv.slice(2), io: Io = defa
         return await serve(rest, values, io);
       case 'diff':
         return diff(rest, values, io);
+      case 'flow':
+        return flow(rest, values, io);
+      case 'impact':
+        return impact(rest, values, io);
       case 'mcp':
         return mcp(rest, values, io);
       default:
@@ -152,35 +168,103 @@ async function serve(args: string[], values: Values, io: Io): Promise<number> {
   }
 }
 
-const STATUS_LETTER = { added: 'A', modified: 'M', deleted: 'D', renamed: 'R', untracked: '?' } as const;
-
 function diff(args: string[], values: Values, io: Io): number {
-  const root = resolve(optionalSingle(args, 'diff') ?? '.');
-  if (!isDirectory(root)) throw new UsageError(`Not a directory: ${root}`);
-  const db = openDatabase(requireIndex(root, values));
-  try {
-    const base = values.base ?? 'HEAD';
-    const result = getDiff(db, root, base);
+  const root = optionalRoot(args, 0, 'diff');
+  return withIndex(root, values, (db) => {
+    const impactDepth = depthOption(values) ?? DEFAULT_DIFF_IMPACT_DEPTH;
+    const result = getDiff(db, root, values.base ?? 'HEAD', { impactDepth });
     if (!result.isRepo) throw new Error(`${root} is not inside a git repository.`);
-    if (result.files.length === 0) {
-      io.out(`No uncommitted changes against ${base}.`);
+    for (const line of diffLines(db, result, impactDepth)) io.out(line);
+    return 0;
+  });
+}
+
+function flow(args: string[], values: Values, io: Io): number {
+  const [question, ...rest] = args;
+  if (!question) throw new UsageError('`xray flow` needs a question, e.g. xray flow "how does checkout work?"');
+  const root = optionalRoot(rest, 0, 'flow');
+  return withIndex(root, values, (db) => {
+    const maxDepth = depthOption(values) ?? DEFAULT_QUESTION_DEPTH;
+    const trace = traceQuestion(db, question, { maxDepth, relations: ['calls'] });
+    if (trace.keywords.length === 0) throw new UsageError(`No searchable words in "${question}"`);
+    io.out(`Keywords: ${trace.keywords.join(', ')}`);
+    if (trace.entryPoints.length === 0) {
+      io.out('No files or symbols match those words.');
+      return 1;
+    }
+    const edges = db
+      .prepare('SELECT source, target FROM edges WHERE id IN (SELECT value FROM json_each(?)) ORDER BY id')
+      .all(JSON.stringify(trace.edges)) as { source: string; target: string }[];
+    io.out(
+      `Traced ${trace.depths.size} nodes from ${trace.entryPoints.length} entry ${trace.entryPoints.length === 1 ? 'point' : 'points'} ` +
+        `(calls, up to ${maxDepth} hops):`,
+    );
+    for (const line of flowTree(db, trace.entryPoints, edges)) io.out(line);
+    return 0;
+  });
+}
+
+function impact(args: string[], values: Values, io: Io): number {
+  const [target, ...rest] = args;
+  if (!target) throw new UsageError('`xray impact` needs a target: a file path, symbol name or node id');
+  const direction = values.direction;
+  if (direction !== 'upstream' && direction !== 'downstream' && direction !== 'both') {
+    throw new UsageError(`Invalid --direction: ${direction}`);
+  }
+  const root = optionalRoot(rest, 0, 'impact');
+  return withIndex(root, values, (db) => {
+    const id = resolveTarget(db, target);
+    const maxDepth = depthOption(values) ?? DEFAULT_IMPACT_DEPTH;
+    const result = blastRadius(db, [id], { direction, maxDepth });
+    const verb = direction === 'upstream' ? 'depend on it' : direction === 'downstream' ? 'it depends on' : 'are connected to it';
+    io.out(`Blast radius of ${label(describeNodes(db, [id]).get(id), id)} (${direction}, up to ${maxDepth} hops):`);
+    if (result.nodes.length === 0) {
+      io.out(`  Nothing ${direction === 'upstream' ? 'depends on it' : 'is connected'} within ${maxDepth} hops.`);
       return 0;
     }
-
-    const symbolCount = result.files.reduce((sum, file) => sum + file.symbolIds.length, 0);
-    io.out(`${result.files.length} files changed, ${symbolCount} symbols touched (against ${base}):`);
-    for (const file of result.files) {
-      const from = file.oldPath ? ` (from ${file.oldPath})` : '';
-      io.out(`  ${STATUS_LETTER[file.status]} ${file.path}${from}${file.indexStale ? '  [index stale]' : ''}`);
-      for (const id of file.symbolIds) io.out(`      ${id.slice(id.indexOf('#') + 1)}`);
-    }
-    if (result.files.some((file) => file.indexStale)) {
-      io.out('Some files changed since the last index; run `xray index` for exact symbol mapping.');
-    }
+    io.out(`  ${impactSummary(result)} ${verb}.`);
+    for (const line of impactLines(db, result)) io.out(line);
     return 0;
+  });
+}
+
+/** A node id, a repository file path, or a symbol name (`login`, `UserRepository.findByEmail`). */
+function resolveTarget(db: XrayDb, target: string): string {
+  const exists = db.prepare('SELECT 1 FROM nodes WHERE id = ?').pluck();
+  if (exists.get(target)) return target;
+  const path = target.replace(/\\/g, '/').replace(/^\.\//, '');
+  if (exists.get(fileNodeId(path))) return fileNodeId(path);
+  const symbols = db
+    .prepare("SELECT id FROM nodes WHERE layer = 'symbol' AND (symbol = ? OR name = ?) ORDER BY id LIMIT 9")
+    .pluck()
+    .all(target, target) as string[];
+  if (symbols.length === 1) return symbols[0]!;
+  if (symbols.length > 1) {
+    throw new UsageError(`"${target}" matches several symbols; pass one of these ids:\n  ${symbols.slice(0, 8).join('\n  ')}`);
+  }
+  throw new UsageError(`No file, symbol or node named "${target}" in the index`);
+}
+
+function withIndex(root: string, values: Values, run: (db: XrayDb) => number): number {
+  const db = openDatabase(requireIndex(root, values));
+  try {
+    return run(db);
   } finally {
     db.close();
   }
+}
+
+function optionalRoot(args: string[], at: number, command: string): string {
+  const root = resolve(optionalSingle(args.slice(at), command) ?? '.');
+  if (!isDirectory(root)) throw new UsageError(`Not a directory: ${root}`);
+  return root;
+}
+
+function depthOption(values: Values): number | undefined {
+  if (values.depth === undefined) return undefined;
+  const depth = Number(values.depth);
+  if (!Number.isInteger(depth) || depth < 1 || depth > 20) throw new UsageError(`--depth must be between 1 and 20, got ${values.depth}`);
+  return depth;
 }
 
 function mcp(args: string[], values: Values, io: Io): number {
