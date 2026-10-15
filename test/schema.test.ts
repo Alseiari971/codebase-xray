@@ -12,7 +12,7 @@ function tables(db: Database.Database): string[] {
 
 test('creates the evidence graph tables', () => {
   const db = openDatabase(':memory:');
-  assert.deepEqual(tables(db), ['edge_evidence', 'edges', 'evidence', 'meta', 'nodes']);
+  assert.deepEqual(tables(db), ['edge_evidence', 'edges', 'evidence', 'git_changes', 'meta', 'nodes']);
   assert.equal(db.pragma('user_version', { simple: true }), SCHEMA_VERSION);
   assert.equal(db.pragma('foreign_keys', { simple: true }), 1);
 });
@@ -21,7 +21,7 @@ test('is idempotent when reopened', () => {
   const file = join(makeRepo({}), '.xray', 'index.db');
   openDatabase(file).close();
   const db = openDatabase(file);
-  assert.equal(tables(db).length, 5);
+  assert.equal(tables(db).length, 6);
   db.close();
 });
 

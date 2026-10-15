@@ -6,9 +6,9 @@
 
 Codebase X-Ray turns a repository into an interactive map of how it actually works: architecture, dependencies, feature flows, and change impact. Every relationship on the map traces back to exact source lines. The same local evidence graph serves a browser UI and an MCP server, so you and your coding agent work from the same facts.
 
-> **Status: Phase 3 (local server and UI).** `xray ./my-project` indexes a TypeScript/JavaScript repository and opens an interactive map in your browser. Click any node or edge to see the exact source lines behind it, trace paths between nodes, and see uncommitted changes highlighted. The MCP server is still to come (see [Roadmap](#roadmap)).
+> **Status: Phase 4 (diff review and flow tracing).** `xray ./my-project` indexes a TypeScript/JavaScript repository and opens an interactive map. Click any node or edge for the exact source lines behind it, and ask "how does login work?" to trace a feature. Before you commit, uncommitted changes light up amber and everything that calls or imports them lights up red. The MCP server is still to come (see [Roadmap](#roadmap)).
 
-![Tracing the path from indexRepository to clusterFiles, with the evidence panel showing the target's source](docs/ui-flow-trace.jpg)
+![An uncommitted edit to hashPassword in amber, with everything that depends on it in red](docs/ui-diff-impact.jpg)
 
 ## Quick start
 
@@ -30,10 +30,12 @@ Then open http://localhost:4173. To put `xray` on your PATH, run `npm link` once
 | `xray <path>` | Index, then serve the map | Working |
 | `xray index <path>` | Build or refresh the evidence graph in `<path>/.xray/index.db` | Working |
 | `xray serve <path>` | Local web UI and HTTP/JSON API on `localhost` | Working |
-| `xray diff [path]` / `xray --uncommitted` | List uncommitted changes and the symbols they touch | Working |
+| `xray diff [path]` / `xray --uncommitted` | Uncommitted changes, the symbols they touch, and what depends on them | Working |
+| `xray flow "<question>" [path]` | Trace a feature from the symbols its words name | Working |
+| `xray impact <target> [path]` | Blast radius of a file, symbol name or node id | Working |
 | `xray mcp <path>` | Read-only MCP server for Claude Code, Cursor, Windsurf, etc. | Planned |
 
-Options: `--db <file>` to store the index somewhere else, `--full` to re-extract every file, `--port <n>` for `serve`, `--base <ref>` for `diff`.
+Options: `--db <file>` to store the index somewhere else, `--full` to re-extract every file, `--port <n>` for `serve`, `--base <ref>` for `diff`, `--depth <n>` for how many hops `diff`, `flow` and `impact` follow, `--direction upstream|downstream|both` for `impact`.
 
 ```text
 $ xray index ./excalidraw
@@ -43,15 +45,39 @@ Graph: 10 clusters, 4322 symbols, 4334 import edges, 11115 call edges, 83 extern
 ```
 
 ```text
+$ xray flow "how does login work?"
+Keywords: login
+Traced 9 nodes from 2 entry points (calls, up to 5 hops):
+  handleLogin  src/api/routes.ts:3
+  └─ login  src/auth/login.ts:9
+     ├─ hashPassword  src/auth/hash.ts:3
+     │  └─ bcrypt  (npm package)
+     ├─ UserRepository  src/db/user-repository.ts:6
+     └─ UserRepository.findByEmail  src/db/user-repository.ts:7
+        └─ UserRepository.query  src/db/user-repository.ts:11
+  LoginForm  src/ui/LoginForm.tsx:5
+  └─ Button  src/ui/LoginForm.tsx:1
+```
+
+```text
 $ xray diff
-3 files changed, 3 symbols touched (against HEAD):
-  D src/auth/hash.ts
+1 file changed, 1 symbol touched (against HEAD):
+  M src/auth/hash.ts
       hashPassword
-  ? src/auth/otp.ts  [index stale]
-  M src/db/user-repository.ts  [index stale]
-      UserRepository
-      UserRepository.findByEmail
-Some files changed since the last index; run `xray index` for exact symbol mapping.
+
+Impact: 2 symbols in 3 files across 2 clusters call or import the changed code (up to 3 hops):
+  1  src/auth/login.ts  login
+  2  src/api/routes.ts  handleLogin
+  3  src/api/server.js  (file-level)
+```
+
+```text
+$ xray impact hashPassword
+Blast radius of hashPassword  src/auth/hash.ts:3 (upstream, up to 4 hops):
+  2 symbols in 3 files across 2 clusters depend on it.
+  1  src/auth/login.ts  login
+  2  src/api/routes.ts  handleLogin
+  3  src/api/server.js  (file-level)
 ```
 
 ## The map
@@ -60,8 +86,10 @@ Some files changed since the last index; run `xray index` for exact symbol mappi
 
 - **Zoom by expanding.** The map opens on folder clusters. Press `+` or double-click to expand a cluster into its files and a file into its symbols. Edges roll up to whatever is visible, so a collapsed cluster still shows what it depends on, with a count of the underlying edges.
 - **Evidence on click.** Click a node for its own source lines: a symbol's range with a little context, a file's contents, or every line that imports an external package. Click an edge for each underlying relationship, with its trust badge (*Deterministic* or *Heuristic · 70%*) and the exact cited lines. Lines that moved since indexing are flagged *stale*.
-- **Flow tracing.** Use *Trace from here* and *Trace to here* to light up the shortest paths between two nodes, or *Show downstream* for everything a node reaches.
-- **Diff overlay.** Files and symbols with uncommitted changes are marked Δ, and collapsed clusters show how many changes they contain.
+- **Trace a feature.** Type a question such as *how does checkout work?* and the flow lights up from its entry points (see [Flow and impact](#flow-and-impact)).
+- **Trace between nodes.** *Trace from here* and *Trace to here* light up the shortest paths between two nodes, and *Show downstream* lights up everything a node reaches.
+- **Diff review.** Uncommitted changes are amber (Δ) and the code that calls or imports them is red (!), so you can review an AI edit's reach before committing. Collapsed clusters show how many changes they contain, and the evidence panel marks the exact changed lines.
+- **Blast radius.** The button on any node shows, in red, everything that depends on it.
 - **Search** files and symbols by name, then jump straight to them.
 
 The client is React + [React Flow](https://reactflow.dev) with a nested [dagre](https://github.com/dagrejs/dagre) layout. esbuild bundles it in memory (in about 100 ms) when the server starts, so there is still no build step.
@@ -75,8 +103,17 @@ The server only listens on `127.0.0.1` and rejects requests whose `Host` header 
 | `GET /api/graph` | Every node (clusters, files, symbols, externals) and edge, with metadata |
 | `GET /api/node/:id/evidence` | The node's source lines, read from disk using its stored line range |
 | `GET /api/edge/:id/evidence` | The cited lines for each piece of evidence behind an edge |
-| `POST /api/flow` | `{ from, to?, maxDepth?, relations?, limit? }` returns the shortest paths, or everything downstream without `to` |
-| `GET /api/diff?base=<ref>` | Uncommitted changes (staged, unstaged, untracked), mapped to files and the symbols whose lines they touch |
+| `POST /api/flow` | `{ from, to?, maxDepth?, relations?, limit? }` returns the shortest paths, or everything downstream without `to`. `{ question }` returns the matched entry points and their traced flow. |
+| `POST /api/impact` | `{ ids, direction?, maxDepth?, relations? }` returns the blast radius: affected nodes with their distance, grouped by file |
+| `GET /api/diff?base=<ref>` | Uncommitted changes (staged, unstaged, untracked), the symbols whose lines they touch (flagged `git-changed`), and the blast radius of those changes |
+
+## Flow and impact
+
+All traversal is deterministic and runs in SQLite as recursive CTEs ([`src/graph/traverse.ts`](src/graph/traverse.ts)), so the browser, the CLI and, later, the MCP server get identical answers. `UNION` removes repeated (node, depth) rows, so cycles stop at the depth limit. Starting from a file or cluster starts from everything inside it.
+
+- **Questions.** The question's words are split and stemmed ("indexing" also matches `indexRepository`), then matched against symbol and file names. Matches that no other match calls become the entry points, preferring functions and classes over types. Everything they call is traced from there. No LLM is involved, so an unmatched word simply matches nothing.
+- **Blast radius** walks `upstream` (what depends on a node, i.e. what a change could break) or `downstream` (what it depends on) and groups the result by file and cluster.
+- **Diff review.** `git diff --unified=0` hunks are overlapped with symbol line ranges in a single SQL query. The changed nodes are recorded in the `git_changes` table, flagged `git-changed`, with their changed lines. Their blast radius starts from the innermost changed symbols: editing a method's body impacts the method's callers, not every user of its class. A file itself counts as changed only when the edit is outside every symbol, or the file was deleted.
 
 ## How indexing works
 
@@ -109,6 +146,7 @@ The schema lives in [`src/db/schema.sql`](src/db/schema.sql) and follows section
 | `edges` | Relationships such as `imports`, `calls`, `defines-route`, `reads-table` | `source`, `target`, `relation`, `resolution_type`, `confidence` (0 to 1) |
 | `evidence` | Exact source ranges that justify an edge | `file_path`, `start_line`, `end_line`, `rule`, `excerpt_hash` |
 | `edge_evidence` | Links each edge to one or more pieces of evidence | `edge_id`, `evidence_id` |
+| `git_changes` | Nodes flagged `git-changed` by the latest diff (a snapshot, replaced on every diff) | `node_id`, `relation`, `status`, `base`, `ranges` |
 | `meta` | Index facts: repository root, last indexed time | `key`, `value` |
 
 Node ids are readable and stable across runs: `cluster:src/auth`, `file:src/auth/login.ts`, `sym:src/auth/login.ts#login`, `sym:src/db/repo.ts#UserRepository.findByEmail`, `ext:npm:bcrypt`.
@@ -118,7 +156,7 @@ Node ids are readable and stable across runs: `cluster:src/auth`, `file:src/auth
 ## Development
 
 ```bash
-npm test           # node:test suite (schema, clustering, adapter, indexer, diff, server API, UI model and layout, CLI)
+npm test           # node:test suite (schema, clustering, adapter, indexer, diff, traversal, server API, UI model and layout, CLI)
 npm run typecheck  # tsc --noEmit
 ```
 
@@ -129,8 +167,8 @@ The sources run directly through [tsx](https://tsx.is), so there is no build ste
 - [x] **Phase 1: Foundation.** CLI skeleton, SQLite schema, incremental file indexing
 - [x] **Phase 2: AST indexer.** ts-morph adapter for symbols, imports and the call graph with evidence, plus folder clusters
 - [x] **Phase 3: Local server and UI.** HTTP/JSON API, React Flow map with an evidence panel, flow tracing, and the git diff overlay
+- [x] **Phase 4: Diff review and flow tracing.** Recursive-CTE traversal, question-driven feature tracing, blast radius, and `git-changed` flags with change impact
 - [ ] Framework adapters: routes (`defines-route`), database access (`reads-table` / `writes-table`), env config
-- [ ] Blast-radius queries and downstream impact for diffs
 - [ ] `xray mcp`: read-only MCP tools (`get_architecture_clusters`, `trace_flow`, `get_blast_radius`, `get_node_evidence`, `get_changed_nodes`)
 - [ ] Grounded AI explanations (optional, bring your own key)
 - [ ] Exports: SVG, JSON, Markdown

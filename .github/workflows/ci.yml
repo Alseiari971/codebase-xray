@@ -35,3 +35,5 @@ jobs:
           node bin/xray.js --help
           node bin/xray.js index .
           node bin/xray.js diff .
+          node bin/xray.js flow "how does indexing work?" .
+          node bin/xray.js impact clusterFiles .

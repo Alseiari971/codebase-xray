@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { main, type Io } from '../src/cli.ts';
-import { makeRepo } from './helpers.ts';
+import { copyFixture, git, makeRepo } from './helpers.ts';
 
 async function runWith(untilShutdown: Io['untilShutdown'], ...argv: string[]) {
   const out: string[] = [];
@@ -112,6 +112,88 @@ test('a bare <path> indexes, then serves', async () => {
   const { code, out } = await run(root, '--port', '0');
   assert.equal(code, 0);
   assert.match(out, /Indexed 1 files[\s\S]*running at/);
+});
+
+test('flow traces a feature as a call tree', async () => {
+  const root = copyFixture();
+  await run('index', root);
+  const { code, out } = await run('flow', 'how does login work?', root);
+  assert.equal(code, 0);
+  assert.equal(
+    out,
+    [
+      'Keywords: login',
+      'Traced 9 nodes from 2 entry points (calls, up to 5 hops):',
+      '  handleLogin  src/api/routes.ts:3',
+      '  └─ login  src/auth/login.ts:9',
+      '     ├─ hashPassword  src/auth/hash.ts:3',
+      '     │  └─ bcrypt  (npm package)',
+      '     ├─ UserRepository  src/db/user-repository.ts:6',
+      '     └─ UserRepository.findByEmail  src/db/user-repository.ts:7',
+      '        └─ UserRepository.query  src/db/user-repository.ts:11',
+      '  LoginForm  src/ui/LoginForm.tsx:5',
+      '  └─ Button  src/ui/LoginForm.tsx:1',
+    ].join('\n'),
+  );
+  assert.equal((await run('flow', 'how do payments work?', root)).code, 1);
+  assert.equal((await run('flow', 'how does it work?', root)).code, 2);
+  assert.equal((await run('flow')).code, 2);
+});
+
+test('impact prints the blast radius of a symbol, file or node id', async () => {
+  const root = copyFixture();
+  await run('index', root);
+
+  const bySymbol = await run('impact', 'hashPassword', root);
+  assert.equal(bySymbol.code, 0);
+  assert.equal(
+    bySymbol.out,
+    [
+      'Blast radius of hashPassword  src/auth/hash.ts:3 (upstream, up to 4 hops):',
+      '  2 symbols in 3 files across 2 clusters depend on it.',
+      '  1  src/auth/login.ts  login',
+      '  2  src/api/routes.ts  handleLogin',
+      '  3  src/api/server.js  (file-level)',
+    ].join('\n'),
+  );
+
+  assert.match((await run('impact', 'src/db/user-repository.ts', root, '--depth', '1')).out, /3 files|2 files/);
+  assert.match((await run('impact', 'sym:src/auth/login.ts#login', root, '--direction', 'downstream')).out, /it depends on/);
+  assert.match((await run('impact', 'src/index.ts', root)).out, /Nothing depends on it/);
+
+  const missing = await run('impact', 'nothingLikeThis', root);
+  assert.equal(missing.code, 2);
+  assert.match(missing.err, /No file, symbol or node named/);
+  assert.equal((await run('impact', 'login', root, '--direction', 'sideways')).code, 2);
+  assert.equal((await run('impact', 'login', root, '--depth', '0')).code, 2);
+});
+
+test('diff reports changed symbols and what depends on them', async () => {
+  const root = copyFixture();
+  git(root, 'init', '-q');
+  git(root, 'add', '-A');
+  git(root, 'commit', '-q', '-m', 'initial');
+  await run('index', root);
+  assert.equal((await run('diff', root)).out, 'No uncommitted changes against HEAD.');
+
+  const path = join(root, 'src/auth/hash.ts');
+  writeFileSync(path, readFileSync(path, 'utf8').replace('hashSync(password, 10)', 'hashSync(password, 12)'));
+  await run('index', root);
+  const { code, out } = await run('diff', root);
+  assert.equal(code, 0);
+  assert.equal(
+    out,
+    [
+      '1 file changed, 1 symbol touched (against HEAD):',
+      '  M src/auth/hash.ts',
+      '      hashPassword',
+      '',
+      'Impact: 2 symbols in 3 files across 2 clusters call or import the changed code (up to 3 hops):',
+      '  1  src/auth/login.ts  login',
+      '  2  src/api/routes.ts  handleLogin',
+      '  3  src/api/server.js  (file-level)',
+    ].join('\n'),
+  );
 });
 
 test('diff outside a git repository is an error', async () => {

@@ -66,6 +66,19 @@ CREATE TABLE IF NOT EXISTS edge_evidence (
 
 CREATE INDEX IF NOT EXISTS idx_edge_evidence_evidence ON edge_evidence(evidence_id);
 
+-- Nodes flagged `git-changed` by the latest diff (blueprint section 13:
+-- working tree -> symbol). Replaced wholesale on every diff, so it is a
+-- snapshot rather than history; MCP tools and the UI read it.
+CREATE TABLE IF NOT EXISTS git_changes (
+  node_id      TEXT PRIMARY KEY REFERENCES nodes(id) ON DELETE CASCADE,
+  relation     TEXT NOT NULL DEFAULT 'git-changed' CHECK (relation = 'git-changed'),
+  status       TEXT NOT NULL CHECK (status IN ('added', 'modified', 'deleted', 'renamed', 'untracked')),
+  base         TEXT NOT NULL,
+  -- Changed line ranges inside the node, as [[start, end], ...] in the working tree.
+  ranges       TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(ranges)),
+  detected_at  TEXT NOT NULL
+);
+
 -- Index-level facts: repository root, last indexed time, tool version.
 CREATE TABLE IF NOT EXISTS meta (
   key    TEXT PRIMARY KEY,

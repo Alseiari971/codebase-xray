@@ -1,6 +1,6 @@
 import { ReactFlowProvider } from '@xyflow/react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { DiffResponse, FlowResponse, GraphResponse } from '../shared/api-types.ts';
+import type { DiffResponse, FlowResponse, GraphResponse, ImpactResponse } from '../shared/api-types.ts';
 import { api } from './api.ts';
 import { EvidencePanel, type Selection } from './EvidencePanel.tsx';
 import { GraphCanvas, type Highlights } from './GraphCanvas.tsx';
@@ -9,12 +9,23 @@ import { ancestors, buildView, indexGraph, markVisible, searchNodes, type GraphI
 interface FlowState {
   from: string | null;
   to: string | null;
+  /** Set when tracing a feature by question instead of between two nodes. */
+  question: string | null;
   result: FlowResponse | null;
   error: string | null;
   loading: boolean;
 }
 
-const NO_FLOW: FlowState = { from: null, to: null, result: null, error: null, loading: false };
+interface ImpactState {
+  seed: string;
+  result: ImpactResponse | null;
+  error: string | null;
+}
+
+const NO_FLOW: FlowState = { from: null, to: null, question: null, result: null, error: null, loading: false };
+
+/** Reveal a traced flow node by node only while it stays readable. */
+const MAX_REVEAL = 60;
 
 export function App() {
   const [graph, setGraph] = useState<GraphResponse | null>(null);
@@ -43,8 +54,10 @@ function Explorer({ graph, diff }: { graph: GraphResponse; diff: DiffResponse | 
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   const [showExternal, setShowExternal] = useState(false);
   const [showDiff, setShowDiff] = useState(true);
+  const [showDiffImpact, setShowDiffImpact] = useState(true);
   const [selection, setSelection] = useState<Selection>(null);
   const [flow, setFlow] = useState<FlowState>(NO_FLOW);
+  const [impact, setImpact] = useState<ImpactState | null>(null);
 
   const view = useMemo(() => buildView(index, { expanded, showExternal }), [index, expanded, showExternal]);
 
@@ -112,24 +125,54 @@ function Explorer({ graph, diff }: { graph: GraphResponse; diff: DiffResponse | 
     );
   };
 
+  const traceQuestion = (question: string) => {
+    setFlow({ ...NO_FLOW, question, loading: true });
+    api.flow({ question }).then(
+      (result) => {
+        setFlow((current) => (current.question === question ? { ...current, result, loading: false } : current));
+        const reached = result.reachable?.nodes ?? [];
+        const shown = reached.length <= MAX_REVEAL ? reached : (result.question?.entryPoints ?? []);
+        reveal(shown);
+        if (shown.length > 0) focusOn(shown);
+      },
+      (error: Error) =>
+        setFlow((current) => (current.question === question ? { ...current, error: error.message, loading: false } : current)),
+    );
+  };
+
+  const showImpact = (seed: string) => {
+    setImpact({ seed, result: null, error: null });
+    api.impact({ ids: [seed] }).then(
+      (result) => setImpact((current) => (current?.seed === seed ? { ...current, result } : current)),
+      (error: Error) => setImpact((current) => (current?.seed === seed ? { ...current, error: error.message } : current)),
+    );
+  };
+
   const changedIds = useMemo(() => new Set(diff?.nodeIds ?? []), [diff]);
   const changedFiles = useMemo(() => new Map((diff?.files ?? []).map((file) => [file.path, file])), [diff]);
+
+  // An explicit blast radius wins over the diff's.
+  const activeImpact = impact?.result ?? (showDiff && showDiffImpact ? (diff?.impact ?? null) : null);
 
   const highlights = useMemo<Highlights>(() => {
     const flowNodeIds = flow.result ? (flow.result.reachable?.nodes ?? flow.result.paths.flatMap((path) => path.nodes)) : [];
     const flowEdgeIds = flow.result ? (flow.result.reachable?.edges ?? flow.result.paths.flatMap((path) => path.edges)) : [];
+    const entryPoints = flow.result?.question?.entryPoints ?? [];
     return {
       selectedNode: selection?.kind === 'node' ? (view.representative(selection.id) ?? null) : null,
       selectedEdge: selection?.kind === 'edge' ? selection.edge.id : null,
       changed: showDiff ? markVisible(view, changedIds) : new Map(),
+      impacted: activeImpact ? markVisible(view, activeImpact.nodes.map((node) => node.id)) : new Map(),
+      impactEdges: new Set(activeImpact?.edges ?? []),
       flowNodes: markVisible(view, flowNodeIds),
       flowEdges: new Set(flowEdgeIds),
       flowEnds: {
         from: flow.from ? (view.representative(flow.from) ?? null) : null,
         to: flow.to ? (view.representative(flow.to) ?? null) : null,
+        entries: new Set(entryPoints.map((id) => view.representative(id)).filter((id) => id !== undefined)),
       },
     };
-  }, [view, selection, showDiff, changedIds, flow]);
+  }, [view, selection, showDiff, changedIds, activeImpact, flow]);
 
   // A selected edge may no longer exist after expanding or collapsing.
   useEffect(() => {
@@ -149,6 +192,8 @@ function Explorer({ graph, diff }: { graph: GraphResponse; diff: DiffResponse | 
     return { files: byLayer('file'), symbols: byLayer('symbol'), externals: byLayer('external'), edges: graph.edges.length };
   }, [graph]);
 
+  const diffImpactFiles = diff?.impact.files.length ?? 0;
+
   return (
     <div className="app">
       <header className="toolbar">
@@ -158,6 +203,7 @@ function Explorer({ graph, diff }: { graph: GraphResponse; diff: DiffResponse | 
           <span className="repo" title={graph.root}>{basename(graph.root)}</span>
         </div>
         <SearchBox index={index} onSelect={selectNode} />
+        <QuestionBox onAsk={traceQuestion} />
         <div className="toolbar-group">
           <label className="toggle">
             <input type="checkbox" checked={showExternal} onChange={(event) => setShowExternal(event.target.checked)} />
@@ -165,8 +211,24 @@ function Explorer({ graph, diff }: { graph: GraphResponse; diff: DiffResponse | 
           </label>
           <label className={`toggle ${diff?.isRepo ? '' : 'disabled'}`} title={diff?.isRepo ? 'Highlight uncommitted changes' : 'Not a git repository'}>
             <input type="checkbox" checked={showDiff} disabled={!diff?.isRepo} onChange={(event) => setShowDiff(event.target.checked)} />
-            Diff{diff?.isRepo ? ` (${diff.files.length} changed)` : ''}
+            <i className="swatch-dot changed" />
+            Diff{diff?.isRepo ? ` (${diff.files.length})` : ''}
           </label>
+          {diff?.isRepo && (
+            <label
+              className={`toggle ${showDiff ? '' : 'disabled'}`}
+              title="Highlight code that calls or imports the changed code, up to 3 hops away"
+            >
+              <input
+                type="checkbox"
+                checked={showDiffImpact}
+                disabled={!showDiff}
+                onChange={(event) => setShowDiffImpact(event.target.checked)}
+              />
+              <i className="swatch-dot impact" />
+              Impact ({diffImpactFiles} {diffImpactFiles === 1 ? 'file' : 'files'})
+            </label>
+          )}
           <button onClick={() => setExpanded(new Set())} title="Collapse everything back to clusters">Collapse all</button>
         </div>
         <span className="stats">
@@ -174,7 +236,7 @@ function Explorer({ graph, diff }: { graph: GraphResponse; diff: DiffResponse | 
         </span>
       </header>
 
-      {(flow.from || flow.to) && (
+      {(flow.from || flow.to || flow.question) && (
         <FlowBar
           index={index}
           flow={flow}
@@ -183,6 +245,7 @@ function Explorer({ graph, diff }: { graph: GraphResponse; diff: DiffResponse | 
           onClear={() => setFlow(NO_FLOW)}
         />
       )}
+      {impact && <ImpactBar index={index} impact={impact} onSelect={selectNode} onClear={() => setImpact(null)} />}
 
       <main className="workspace">
         <div className="canvas">
@@ -207,6 +270,7 @@ function Explorer({ graph, diff }: { graph: GraphResponse; diff: DiffResponse | 
           onToggle={toggle}
           onTraceFrom={(id) => setFlow((current) => ({ ...NO_FLOW, from: id, to: current.to === id ? null : current.to }))}
           onTraceTo={(id) => setFlow((current) => ({ ...NO_FLOW, to: id, from: current.from === id ? null : current.from }))}
+          onImpact={showImpact}
         />
       </main>
     </div>
@@ -216,6 +280,27 @@ function Explorer({ graph, diff }: { graph: GraphResponse; diff: DiffResponse | 
 function FlowBar({ index, flow, onSelect, onDownstream, onClear }: { index: GraphIndex; flow: FlowState; onSelect: (id: string) => void; onDownstream: () => void; onClear: () => void }) {
   const name = (id: string | null) => (id ? (index.nodes.get(id)?.name ?? id) : null);
   const result = flow.result;
+
+  if (flow.question !== null) {
+    const entries = result?.question?.entryPoints ?? [];
+    let status: string;
+    if (flow.loading) status = 'Tracing…';
+    else if (flow.error) status = flow.error;
+    else if (entries.length === 0) status = `Nothing matches "${result?.question?.keywords.join(' ') ?? flow.question}"`;
+    else status = `${result?.reachable?.nodes.length ?? 0} nodes traced from`;
+    return (
+      <div className="flowbar">
+        <span className="flowbar-label">Feature</span>
+        <span className="chip static">{flow.question}</span>
+        <span className={`flowbar-status ${flow.error ? 'error' : ''}`}>{status}</span>
+        {entries.map((id) => (
+          <button key={id} className="link" onClick={() => onSelect(id)}>{name(id)}</button>
+        ))}
+        <button onClick={onClear}>Clear</button>
+      </div>
+    );
+  }
+
   let status: string;
   if (flow.loading) status = 'Tracing…';
   else if (flow.error) status = flow.error;
@@ -243,6 +328,53 @@ function FlowBar({ index, flow, onSelect, onDownstream, onClear }: { index: Grap
       {flow.from && !flow.to && !flow.loading && <button onClick={onDownstream}>Show downstream</button>}
       <button onClick={onClear}>Clear</button>
     </div>
+  );
+}
+
+function ImpactBar({ index, impact, onSelect, onClear }: { index: GraphIndex; impact: ImpactState; onSelect: (id: string) => void; onClear: () => void }) {
+  const seed = index.nodes.get(impact.seed);
+  const result = impact.result;
+  let status: string;
+  if (impact.error) status = impact.error;
+  else if (!result) status = 'Tracing…';
+  else if (result.nodes.length === 0) status = 'Nothing depends on it within 4 hops.';
+  else {
+    const { symbols, files, clusters } = result.summary;
+    status = `${count(symbols, 'symbol')} in ${count(files, 'file')} across ${count(clusters, 'cluster')} depend on it:`;
+  }
+  return (
+    <div className="flowbar impactbar">
+      <span className="flowbar-label">Blast radius</span>
+      <button className="chip" onClick={() => onSelect(impact.seed)}>{seed?.symbol ?? seed?.name ?? impact.seed}</button>
+      <span className={`flowbar-status ${impact.error ? 'error' : ''}`}>{status}</span>
+      {result?.files.slice(0, 6).map((file) => (
+        <button key={file.path} className="link" onClick={() => onSelect(file.nodeIds[0]!)} title={`${file.depth} hop${file.depth > 1 ? 's' : ''} away`}>
+          {basename(file.path)}
+        </button>
+      ))}
+      {result && result.files.length > 6 && <span className="muted">+{result.files.length - 6} more</span>}
+      <button onClick={onClear}>Clear</button>
+    </div>
+  );
+}
+
+function QuestionBox({ onAsk }: { onAsk: (question: string) => void }) {
+  const [question, setQuestion] = useState('');
+  return (
+    <form
+      className="question"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (question.trim()) onAsk(question.trim());
+      }}
+    >
+      <input
+        type="search"
+        placeholder="Trace a feature: how does login work?"
+        value={question}
+        onChange={(event) => setQuestion(event.target.value)}
+      />
+    </form>
   );
 }
 
@@ -294,8 +426,13 @@ function Legend() {
       <span><i className="swatch heuristic" /> heuristic</span>
       <span><i className="swatch flow" /> flow</span>
       <span><i className="swatch changed" /> changed</span>
+      <span><i className="swatch impact" /> impact</span>
     </div>
   );
+}
+
+function count(n: number, word: string): string {
+  return `${n} ${n === 1 ? word : `${word}s`}`;
 }
 
 function basename(path: string): string {

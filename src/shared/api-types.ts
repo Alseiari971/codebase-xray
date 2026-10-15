@@ -68,11 +68,16 @@ export interface EdgeEvidenceResponse {
   snippets: Snippet[];
 }
 
-/** POST /api/flow */
+/**
+ * POST /api/flow. Send either `from` (and optionally `to`), or a `question`
+ * such as "How does checkout work?".
+ */
 export interface FlowRequest {
-  from: string;
+  from?: string;
   /** Omit to get everything reachable downstream of `from`. */
   to?: string;
+  /** Traced from the symbols whose names match its keywords. Default relations: ['calls']. */
+  question?: string;
   /** Default 8, at most 20. */
   maxDepth?: number;
   /** Default ['calls', 'imports']. */
@@ -87,12 +92,55 @@ export interface FlowPath {
 }
 
 export interface FlowResponse {
-  from: string;
+  from: string | null;
   to: string | null;
   /** Shortest paths from `from` (or anything inside it) to `to` (or anything inside it). */
   paths: FlowPath[];
-  /** Only when `to` is omitted: everything reachable within maxDepth. */
+  /** When `to` is omitted, or for a question: everything reachable within maxDepth. */
   reachable: FlowPath | null;
+  /** Only for a question. */
+  question?: QuestionMatch;
+}
+
+export interface QuestionMatch {
+  keywords: string[];
+  /** Nodes whose names matched, best first. */
+  matches: string[];
+  /** The most upstream matches; `reachable` is traced from these. */
+  entryPoints: string[];
+}
+
+/** POST /api/impact */
+export interface ImpactRequest {
+  ids: string[];
+  /** upstream (default): what depends on `ids`, i.e. what a change could break. */
+  direction?: 'upstream' | 'downstream' | 'both';
+  /** Default 4, at most 20. */
+  maxDepth?: number;
+  /** Default ['calls', 'imports']. */
+  relations?: string[];
+}
+
+export interface ImpactNode {
+  id: string;
+  /** Hops from the nearest seed. */
+  depth: number;
+  direction: 'upstream' | 'downstream';
+}
+
+export interface ImpactedFile {
+  path: string;
+  depth: number;
+  nodeIds: string[];
+}
+
+export interface ImpactResponse {
+  seeds: string[];
+  /** Excludes the seeds and anything inside them. */
+  nodes: ImpactNode[];
+  edges: number[];
+  files: ImpactedFile[];
+  summary: { symbols: number; files: number; clusters: number; externals: number };
 }
 
 export type ChangeStatus = 'added' | 'modified' | 'deleted' | 'renamed' | 'untracked';
@@ -122,8 +170,10 @@ export interface DiffResponse {
   isRepo: boolean;
   base: string;
   files: ChangedFile[];
-  /** Every changed file and symbol node id. */
+  /** Every changed file and symbol node id (flagged `git-changed`). */
   nodeIds: string[];
+  /** What depends on the changed code: callers and importers that could break. */
+  impact: ImpactResponse;
 }
 
 export interface ApiError {

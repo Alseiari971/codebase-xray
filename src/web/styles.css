@@ -16,9 +16,10 @@
   --edge-calls: #6e9eff;
   --edge-imports: #6b7686;
   --edge-other: #6b7686;
-  --heuristic: #e3b341;
-  --flow: #ff7b72;
-  --changed: #f0883e;
+  --heuristic: #bc8cff;
+  --flow: #39c5cf;
+  --changed: #e3b341;
+  --impact: #f85149;
   --deterministic: #3fb950;
   --minimap-node: #30363d;
 
@@ -79,7 +80,18 @@ kbd { border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; }
 .toggle.disabled { opacity: 0.5; cursor: default; }
 .stats { margin-left: auto; color: var(--muted); }
 
-.search { position: relative; flex: 0 1 340px; }
+.search { position: relative; flex: 0 1 300px; }
+.question { flex: 0 1 300px; }
+.question input {
+  width: 100%;
+  background: color-mix(in srgb, var(--flow) 8%, var(--bg));
+  color: var(--text);
+  border: 1px solid color-mix(in srgb, var(--flow) 45%, var(--border));
+  border-radius: 6px;
+  padding: 5px 10px;
+  font: inherit;
+}
+.question input:focus { outline: none; border-color: var(--flow); }
 .search input {
   width: 100%;
   background: var(--bg);
@@ -119,6 +131,11 @@ kbd { border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; }
   flex-wrap: wrap;
 }
 .flowbar-label { font-weight: 600; color: var(--flow); }
+.impactbar { background: color-mix(in srgb, var(--impact) 10%, var(--surface)); }
+.impactbar .flowbar-label { color: var(--impact); }
+.chip.static { display: inline-block; padding: 2px 8px; border: 1px solid var(--border); border-radius: 6px; }
+button.danger { border-color: color-mix(in srgb, var(--impact) 55%, var(--border)); color: var(--impact); }
+button.danger:hover:not(:disabled) { border-color: var(--impact); }
 .flowbar-status { color: var(--muted); }
 .flowbar-status.error { color: var(--flow); }
 .flowbar-path { font-family: var(--mono); font-size: 12px; }
@@ -147,6 +164,10 @@ kbd { border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; }
 .swatch.heuristic { border-color: var(--heuristic); border-top-style: dashed; }
 .swatch.flow { border-color: var(--flow); }
 .swatch.changed { border-color: var(--changed); border-top-width: 6px; width: 10px; border-radius: 2px; }
+.swatch.impact { border-color: var(--impact); border-top-width: 6px; width: 10px; border-radius: 2px; }
+.swatch-dot { display: inline-block; width: 8px; height: 8px; border-radius: 2px; }
+.swatch-dot.changed { background: var(--changed); }
+.swatch-dot.impact { background: var(--impact); }
 
 /* Graph nodes */
 .react-flow { --xy-background-color: var(--bg); }
@@ -171,6 +192,9 @@ kbd { border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; }
 .xnode.is-selected { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent); }
 .xnode.is-changed { box-shadow: inset 0 0 0 1px var(--changed); }
 .xnode.is-changed.is-leaf { background: color-mix(in srgb, var(--changed) 14%, var(--surface)); }
+.xnode.is-impacted { box-shadow: inset 0 0 0 1px var(--impact); }
+.xnode.is-impacted.is-leaf { background: color-mix(in srgb, var(--impact) 12%, var(--surface)); }
+.xnode.is-changed.is-impacted { box-shadow: inset 0 0 0 1px var(--changed); }
 .xnode.is-in-flow { border-color: var(--flow); box-shadow: 0 0 0 2px color-mix(in srgb, var(--flow) 40%, transparent); }
 .xnode-header { display: flex; align-items: center; gap: 6px; height: 42px; padding: 0 10px; white-space: nowrap; }
 .xnode-kind { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; }
@@ -180,6 +204,7 @@ kbd { border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; }
 .xnode-badge { font-size: 10px; padding: 0 5px; border-radius: 8px; flex: none; }
 .xnode-badge.changed { background: var(--changed); color: #1b1b1b; }
 .xnode-badge.flow { background: var(--flow); color: #1b1b1b; }
+.xnode-badge.impacted { background: var(--impact); color: #fff; }
 .react-flow__handle { opacity: 0; width: 6px; height: 6px; min-width: 0; min-height: 0; border: none; }
 .react-flow__edge.selected .react-flow__edge-path { stroke: var(--accent) !important; }
 .react-flow__controls button { background: var(--surface); border-color: var(--border); fill: var(--text); }
@@ -262,6 +287,7 @@ kbd { border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; }
 .snippet pre { margin: 0; padding: 6px 0; overflow-x: auto; background: var(--bg); font-size: 12px; line-height: 1.55; }
 .snippet .line { display: flex; min-width: max-content; padding-right: 12px; }
 .snippet .line.cited { background: color-mix(in srgb, var(--accent) 14%, transparent); box-shadow: inset 3px 0 0 var(--accent); }
+.snippet .line.changed .ln { color: var(--changed); box-shadow: inset -2px 0 0 var(--changed); }
 .snippet .ln { flex: none; width: 46px; padding-right: 12px; text-align: right; color: var(--muted); user-select: none; }
 .snippet code { white-space: pre; }
 .snippet .line:not(.cited) code { color: color-mix(in srgb, var(--text) 80%, var(--muted)); }

@@ -5,6 +5,8 @@ import type {
   FlowRequest,
   FlowResponse,
   GraphResponse,
+  ImpactRequest,
+  ImpactResponse,
   NodeEvidenceResponse,
 } from '../shared/api-types.ts';
 
@@ -21,6 +23,12 @@ export const api = {
   edgeEvidence: (id: number) => request<EdgeEvidenceResponse>(`/api/edge/${id}/evidence`),
   flow: (body: FlowRequest) =>
     request<FlowResponse>('/api/flow', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  impact: (body: ImpactRequest) =>
+    request<ImpactResponse>('/api/impact', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),

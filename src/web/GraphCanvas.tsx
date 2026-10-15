@@ -20,16 +20,20 @@ export interface Highlights {
   selectedEdge: string | null;
   /** Visible node id -> number of changed nodes it stands for. */
   changed: Map<string, number>;
+  /** Visible node id -> number of impacted (blast radius) nodes it stands for. */
+  impacted: Map<string, number>;
+  impactEdges: Set<number>;
   flowNodes: Map<string, number>;
   flowEdges: Set<number>;
-  flowEnds: { from: string | null; to: string | null };
+  flowEnds: { from: string | null; to: string | null; entries: Set<string> };
 }
 
 interface XNodeData extends Record<string, unknown> {
   visible: VisibleNode;
   changed: number;
+  impacted: number;
   inFlow: boolean;
-  flowEnd: 'from' | 'to' | null;
+  flowEnd: 'from' | 'to' | 'entry' | null;
   direction: 'LR' | 'TB';
   onToggle: (id: string) => void;
 }
@@ -43,7 +47,7 @@ const LAYER_LABEL: Record<string, string> = {
 };
 
 const XNode = memo(function XNode({ data, selected }: NodeProps<Node<XNodeData>>) {
-  const { visible, changed, inFlow, flowEnd, direction, onToggle } = data;
+  const { visible, changed, impacted, inFlow, flowEnd, direction, onToggle } = data;
   const vertical = direction === 'TB';
   const { node } = visible;
   const classes = [
@@ -52,6 +56,7 @@ const XNode = memo(function XNode({ data, selected }: NodeProps<Node<XNodeData>>
     visible.isContainer ? 'is-container' : 'is-leaf',
     selected ? 'is-selected' : '',
     changed > 0 ? 'is-changed' : '',
+    impacted > 0 ? 'is-impacted' : '',
     inFlow ? 'is-in-flow' : '',
   ].join(' ');
 
@@ -79,6 +84,11 @@ const XNode = memo(function XNode({ data, selected }: NodeProps<Node<XNodeData>>
             {visible.isContainer || visible.childCount === 0 ? 'Δ' : `Δ ${changed}`}
           </span>
         )}
+        {impacted > 0 && (
+          <span className="xnode-badge impacted" title={`${impacted} affected by the change`}>
+            {visible.isContainer || visible.childCount === 0 ? '!' : `! ${impacted}`}
+          </span>
+        )}
         {!visible.isContainer && visible.childCount > 0 && <span className="xnode-count">{visible.childCount}</span>}
       </div>
       <Handle type="source" position={vertical ? Position.Bottom : Position.Right} />
@@ -90,15 +100,18 @@ const nodeTypes = { xnode: XNode };
 
 const EDGE_COLORS: Record<string, string> = { imports: 'var(--edge-imports)', calls: 'var(--edge-calls)' };
 
-function edgeStyle(edge: VisibleEdge, highlighted: boolean, selected: boolean) {
+type EdgeEmphasis = 'selected' | 'flow' | 'impact' | null;
+
+function edgeStyle(edge: VisibleEdge, emphasis: EdgeEmphasis) {
   // Mixed roll-ups keep the normal style; the evidence panel spells out the mix.
   const heuristic = edge.deterministicCount === 0;
-  const color = selected ? 'var(--accent)' : highlighted ? 'var(--flow)' : heuristic ? 'var(--heuristic)' : (EDGE_COLORS[edge.relation] ?? 'var(--edge-other)');
+  const base = heuristic ? 'var(--heuristic)' : (EDGE_COLORS[edge.relation] ?? 'var(--edge-other)');
+  const color = emphasis === 'selected' ? 'var(--accent)' : emphasis === 'flow' ? 'var(--flow)' : emphasis === 'impact' ? 'var(--impact)' : base;
   return {
     stroke: color,
-    strokeWidth: selected || highlighted ? 2.5 : Math.min(1 + Math.log2(edge.edgeIds.length), 3.5),
+    strokeWidth: emphasis ? 2.5 : Math.min(1 + Math.log2(edge.edgeIds.length), 3.5),
     strokeDasharray: heuristic ? '6 4' : edge.relation === 'imports' ? '2 3' : undefined,
-    opacity: highlighted || selected ? 1 : 0.75,
+    opacity: emphasis ? 1 : 0.75,
   };
 }
 
@@ -132,9 +145,16 @@ export function GraphCanvas({ view, highlights, onSelectNode, onSelectEdge, onTo
           data: {
             visible,
             changed: highlights.changed.get(visible.id) ?? 0,
+            impacted: highlights.impacted.get(visible.id) ?? 0,
             inFlow: highlights.flowNodes.has(visible.id),
             flowEnd:
-              highlights.flowEnds.from === visible.id ? 'from' : highlights.flowEnds.to === visible.id ? 'to' : null,
+              highlights.flowEnds.from === visible.id
+                ? 'from'
+                : highlights.flowEnds.to === visible.id
+                  ? 'to'
+                  : highlights.flowEnds.entries.has(visible.id)
+                    ? 'entry'
+                    : null,
             direction: box.direction,
             onToggle,
           },
@@ -146,15 +166,21 @@ export function GraphCanvas({ view, highlights, onSelectNode, onSelectEdge, onTo
   const edges = useMemo<Edge[]>(
     () =>
       view.edges.map((edge) => {
-        const highlighted = edge.edgeIds.some((id) => highlights.flowEdges.has(id));
-        const selected = highlights.selectedEdge === edge.id;
-        const style = edgeStyle(edge, highlighted, selected);
+        const emphasis: EdgeEmphasis =
+          highlights.selectedEdge === edge.id
+            ? 'selected'
+            : edge.edgeIds.some((id) => highlights.flowEdges.has(id))
+              ? 'flow'
+              : edge.edgeIds.some((id) => highlights.impactEdges.has(id))
+                ? 'impact'
+                : null;
+        const style = edgeStyle(edge, emphasis);
         return {
           id: edge.id,
           source: edge.source,
           target: edge.target,
           style,
-          zIndex: highlighted || selected ? 10 : 1,
+          zIndex: emphasis ? 10 : 1,
           markerEnd: { type: MarkerType.ArrowClosed, color: style.stroke, width: 14, height: 14 },
           label: edge.edgeIds.length > 1 ? String(edge.edgeIds.length) : undefined,
           labelStyle: { fill: 'var(--muted)', fontSize: 10 },
@@ -199,7 +225,7 @@ export function GraphCanvas({ view, highlights, onSelectNode, onSelectEdge, onTo
     >
       <Background gap={24} color="var(--grid)" />
       <Controls showInteractive={false} />
-      <MiniMap pannable zoomable style={{ width: 160, height: 110 }} nodeColor={(node) => (node.data as XNodeData).changed ? 'var(--changed)' : 'var(--minimap-node)'} />
+      <MiniMap pannable zoomable style={{ width: 160, height: 110 }} nodeColor={(node) => (node.data as XNodeData).changed ? 'var(--changed)' : (node.data as XNodeData).impacted ? 'var(--impact)' : 'var(--minimap-node)'} />
     </ReactFlow>
   );
 }

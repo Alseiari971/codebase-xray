@@ -102,11 +102,67 @@ test('maps uncommitted changes onto files and the symbols they touch', () => {
   assert.ok(diff.nodeIds.includes('sym:src/db/user-repository.ts#UserRepository.findByEmail'));
   assert.ok(diff.nodeIds.includes('file:src/auth/hash.ts'));
 
+  // Flagged git-changed in the index, with the changed lines inside each node.
+  const flagged = db.prepare('SELECT node_id, relation, status, ranges FROM git_changes ORDER BY node_id').all();
+  assert.deepEqual(flagged, [
+    { node_id: 'file:src/auth/hash.ts', relation: 'git-changed', status: 'deleted', ranges: '[]' },
+    { node_id: 'file:src/db/user-repository.ts', relation: 'git-changed', status: 'modified', ranges: '[[8,8]]' },
+    { node_id: 'sym:src/auth/hash.ts#hashPassword', relation: 'git-changed', status: 'deleted', ranges: '[[3,5]]' },
+    { node_id: 'sym:src/db/user-repository.ts#UserRepository', relation: 'git-changed', status: 'modified', ranges: '[[8,8]]' },
+    { node_id: 'sym:src/db/user-repository.ts#UserRepository.findByEmail', relation: 'git-changed', status: 'modified', ranges: '[[8,8]]' },
+  ]);
+
+  // Blast radius: callers and importers of the changed code, but not the changed code itself.
+  assert.deepEqual(
+    diff.impact.nodes.map((node) => `${node.depth} ${node.id}`),
+    [
+      '1 file:src/auth/login.ts', // imports the deleted hash.ts
+      '1 sym:src/auth/login.ts#login', // calls hashPassword and findByEmail
+      '2 file:src/api/routes.ts',
+      '2 sym:src/api/routes.ts#handleLogin',
+      '3 file:src/api/server.js',
+      '3 file:src/index.ts',
+    ],
+  );
+  // seed.ts imports user-repository.ts but only calls UserRepository.create, which did not change.
+  assert.ok(!diff.impact.nodes.some((node) => node.id.includes('seed')));
+
   // After re-indexing, the mapping is exact again.
   indexRepository(db, root);
   const refreshed = getDiff(db, root).files.find((file) => file.path === 'src/auth/otp.ts')!;
   assert.equal(refreshed.indexStale, false);
   assert.deepEqual(refreshed.symbolIds, ['sym:src/auth/otp.ts#otp']);
+});
+
+test('a clean working tree clears the git-changed flags', () => {
+  const { root, db } = committedFixture();
+  writeFiles(root, { 'src/index.ts': "export * from './api/routes';\n// edited\n" });
+  assert.equal(getDiff(db, root).nodeIds.length, 1);
+  assert.equal(db.prepare('SELECT count(*) FROM git_changes').pluck().get(), 1);
+
+  git(root, 'checkout', '--', 'src/index.ts');
+  const clean = getDiff(db, root);
+  assert.deepEqual([clean.files, clean.impact.nodes], [[], []]);
+  assert.equal(db.prepare('SELECT count(*) FROM git_changes').pluck().get(), 0);
+});
+
+test('a change to a class itself, not just a method body, impacts code that uses the class', () => {
+  const { root, db } = committedFixture();
+  const path = join(root, 'src/db/user-repository.ts');
+  writeFileSync(path, readFileSync(path, 'utf8').replace('export class UserRepository {', 'export class UserRepository extends Object {'));
+  const diff = getDiff(db, root);
+  assert.deepEqual(diff.impact.seeds, ['sym:src/db/user-repository.ts#UserRepository']);
+  assert.ok(diff.impact.nodes.some((node) => node.id === 'sym:src/db/user-repository.ts#UserRepository.create'));
+  assert.ok(diff.impact.nodes.some((node) => node.id === 'sym:src/auth/login.ts#login'));
+});
+
+test('a change outside any symbol makes the file\'s importers impacted', () => {
+  const { root, db } = committedFixture();
+  // A new import at the top of hash.ts, outside hashPassword().
+  writeFiles(root, { 'src/auth/hash.ts': `import { join } from 'node:path';\n${readFileSync(join(root, 'src/auth/hash.ts'), 'utf8')}` });
+  const diff = getDiff(db, root);
+  assert.deepEqual(diff.impact.seeds, ['file:src/auth/hash.ts']);
+  assert.equal(diff.impact.nodes[0]!.id, 'file:src/auth/login.ts');
 });
 
 test('ignores the .xray index even when it is not gitignored', () => {

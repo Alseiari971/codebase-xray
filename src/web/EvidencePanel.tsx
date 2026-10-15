@@ -15,6 +15,7 @@ interface Props {
   onToggle: (id: string) => void;
   onTraceFrom: (id: string) => void;
   onTraceTo: (id: string) => void;
+  onImpact: (id: string) => void;
 }
 
 /** Fetches whenever `key` changes and ignores responses for a key that is no longer current. */
@@ -59,7 +60,7 @@ export function EvidencePanel(props: Props) {
   );
 }
 
-function NodeDetails({ id, index, expanded, changedFiles, changedIds, onSelectNode, onToggle, onTraceFrom, onTraceTo }: Props & { id: string }) {
+function NodeDetails({ id, index, expanded, changedFiles, changedIds, onSelectNode, onToggle, onTraceFrom, onTraceTo, onImpact }: Props & { id: string }) {
   const node = index.nodes.get(id);
   const evidence = useFetch(id, () => api.nodeEvidence(id));
   if (!node) return <p className="panel-error">Node not found: {id}</p>;
@@ -89,6 +90,9 @@ function NodeDetails({ id, index, expanded, changedFiles, changedIds, onSelectNo
           )}
           <button onClick={() => onTraceFrom(id)}>Trace from here</button>
           <button onClick={() => onTraceTo(id)}>Trace to here</button>
+          <button className="danger" onClick={() => onImpact(id)} title="What depends on this, up to 4 hops away">
+            Blast radius
+          </button>
         </div>
       </header>
 
@@ -102,7 +106,9 @@ function NodeDetails({ id, index, expanded, changedFiles, changedIds, onSelectNo
         {evidence.data && evidence.data.snippets.length === 0 && (
           <p className="muted">{node.layer === 'cluster' ? 'A cluster groups files; expand it or pick a file below.' : 'No source lines for this node.'}</p>
         )}
-        {evidence.data?.snippets.map((snippet, i) => <SnippetView key={i} snippet={snippet} />)}
+        {evidence.data?.snippets.map((snippet, i) => (
+          <SnippetView key={i} snippet={snippet} changedLines={change ? changedLineTest(change) : undefined} />
+        ))}
       </Section>
 
       {children.length > 0 && (
@@ -171,7 +177,13 @@ function UnderlyingEdge({ edge, index, onSelectNode }: { edge: GraphEdge; index:
   );
 }
 
-function SnippetView({ snippet }: { snippet: Snippet }) {
+/** Lines added or edited in the working tree, from the diff's hunks. */
+function changedLineTest(change: ChangedFile): (line: number) => boolean {
+  if (change.status === 'untracked' || change.status === 'added') return () => true;
+  return (line) => change.hunks.some((hunk) => hunk.newLines > 0 && line >= hunk.newStart && line < hunk.newStart + hunk.newLines);
+}
+
+function SnippetView({ snippet, changedLines }: { snippet: Snippet; changedLines?: (line: number) => boolean }) {
   const first = snippet.lines[0]?.number ?? 1;
   const last = snippet.lines.at(-1)?.number ?? 1;
   const wholeFile = snippet.rule === null && snippet.startLine === 1 && first === 1 && (snippet.truncated || last === snippet.endLine);
@@ -188,8 +200,9 @@ function SnippetView({ snippet }: { snippet: Snippet }) {
       <pre>
         {snippet.lines.map((line) => {
           const cited = !wholeFile && line.number >= snippet.startLine && line.number <= snippet.endLine;
+          const changed = changedLines?.(line.number) ?? false;
           return (
-            <div key={line.number} className={cited ? 'line cited' : 'line'}>
+            <div key={line.number} className={`line${cited ? ' cited' : ''}${changed ? ' changed' : ''}`} title={changed ? 'Changed in the working tree' : undefined}>
               <span className="ln">{line.number}</span>
               <code>{line.text || ' '}</code>
             </div>
