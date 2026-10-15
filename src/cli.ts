@@ -6,6 +6,7 @@ import { DEFAULT_DIFF_IMPACT_DEPTH, getDiff } from './git/diff.ts';
 import { blastRadius, DEFAULT_IMPACT_DEPTH } from './graph/impact.ts';
 import { traceQuestion } from './graph/question.ts';
 import { resolveTarget, TargetError } from './graph/resolve.ts';
+import { loadParsers } from './adapters/index.ts';
 import { indexRepository } from './indexer/indexer.ts';
 import { DEFAULT_QUESTION_DEPTH } from './server/flow.ts';
 import { describeNodes, diffLines, exportReport, flowTree, impactLines, impactSummary, label } from './report.ts';
@@ -102,6 +103,7 @@ export async function main(argv: string[] = process.argv.slice(2), io: Io = defa
         io.out(USAGE);
         return 1;
       case 'index':
+        await loadParsers();
         return index(rest, values, io);
       case 'serve':
         return await serve(rest, values, io);
@@ -120,6 +122,7 @@ export async function main(argv: string[] = process.argv.slice(2), io: Io = defa
       default:
         // `xray ./my-project` is the blueprint's one-shot entry point.
         if (rest.length === 0 && isDirectory(command)) {
+          await loadParsers();
           const code = index([command], values, io);
           return code === 0 ? await serve([command], values, io) : code;
         }
@@ -335,6 +338,7 @@ async function mcp(args: string[], values: Values, io: Io): Promise<number> {
   const db = openDatabase(dbPathFor(root, values));
   try {
     // Index on start (incrementally), so an agent never meets a missing or stale graph.
+    await loadParsers();
     const stats = indexRepository(db, root);
     io.err(`Codebase X-Ray MCP server: ${stats.files} files, ${stats.symbols} symbols indexed for ${root}.`);
 

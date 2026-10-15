@@ -30,15 +30,15 @@ const MAX_NODE_EDGES = 25;
 
 const READ_ONLY = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } as const;
 
-const INSTRUCTIONS = `Codebase X-Ray: a deterministic evidence graph of this repository (files, symbols, imports, calls), built from the TypeScript compiler, not guessed.
+const INSTRUCTIONS = `Codebase X-Ray: an evidence graph of this repository (files, symbols, imports, calls), built by parsers (the TypeScript compiler; Tree-sitter for C/C++ and Python), not by an LLM.
 
 Ids are shared with the X-Ray web UI and HTTP API:
-- nodes: cluster:<folder>, file:<path>, sym:<path>#<Name or Class.method>, ext:npm:<pkg>, ext:node:<module>
+- nodes: cluster:<folder>, file:<path>, sym:<path>#<Name or Class.method>, ext:npm:<pkg>, ext:node:<module>, ext:pypi:<pkg>, ext:python:<module>, ext:std:<header>, ext:lib:<library>
 - edges and evidence: numeric ids; every edge cites evidence (file, line range, parser rule).
 
 Suggested use: get_architecture_clusters to orient; trace_flow to see how a feature works; get_node_evidence to read the exact source behind a node or edge; get_blast_radius before changing something; get_changed_nodes after editing, to review what your change touches before committing. Cite node, edge and evidence ids in your answers so a human can check them in the UI.
 
-resolutionType "deterministic" means the type checker proved the relationship; "heuristic" (e.g. a call through an interface) means it is likely but not proven.`;
+resolutionType "deterministic" means the relationship is proven (by the type checker, or an import that names an existing file); "heuristic" means it is likely but not proven: a call through an interface, and every C/C++ and Python call, which is matched by name. Check its confidence.`;
 
 export function createMcpServer(options: McpOptions): McpServer {
   const { db, root } = options;

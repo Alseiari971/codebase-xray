@@ -6,7 +6,7 @@
 
 Codebase X-Ray turns a repository into an interactive map of how it actually works: architecture, dependencies, feature flows, and change impact. Every relationship on the map traces back to exact source lines. The same local evidence graph serves a browser UI and an MCP server, so you and your coding agent work from the same facts.
 
-> **Status: MVP complete.** `xray ./my-project` indexes a TypeScript/JavaScript repository and opens an interactive map. Click any node or edge for the exact source lines behind it, and ask "how does login work?" to trace a feature. Before you commit, uncommitted changes light up amber and everything that calls or imports them lights up red. `xray mcp` gives your coding agent read access to the same evidence graph, with the same ids. With an API key, AI explains a traced flow while citing that evidence. `xray export` writes a README-ready architecture report.
+> **Status: MVP complete.** `xray ./my-project` indexes a TypeScript/JavaScript, C/C++ or Python repository and opens an interactive map. Click any node or edge for the exact source lines behind it, and ask "how does login work?" to trace a feature. Before you commit, uncommitted changes light up amber and everything that calls or imports them lights up red. `xray mcp` gives your coding agent read access to the same evidence graph, with the same ids. With an API key, AI explains a traced flow while citing that evidence. `xray export` writes a README-ready architecture report.
 
 ![Focus view: indexRepository in the middle, its callers on the left and what it calls on the right, with its source in the evidence panel](docs/ui-focus.jpg)
 
@@ -193,9 +193,9 @@ Targets can be node ids, file paths, symbol names (`login`, `UserRepository.find
 
 ## How indexing works
 
-No LLM or API key is involved. Everything comes from the TypeScript compiler.
+No LLM or API key is involved. TypeScript and JavaScript are read with the TypeScript compiler; C, C++ and Python with [Tree-sitter](https://tree-sitter.github.io) grammars compiled to WebAssembly (`@vscode/tree-sitter-wasm`), so nothing needs a native build. The steps below are for TypeScript; [C/C++ and Python](#cc-and-python) work the same way with name-based call resolution.
 
-1. **Scan.** Walk the repository, honouring every `.gitignore` (nested ones too) and always skipping `.git/`, `node_modules/`, `.xray/`, framework build output (`.next/`, `.nuxt/`, `.svelte-kit/`, …) and minified files. Each file gets a SHA-256 `content_hash`.
+1. **Scan.** Walk the repository, honouring every `.gitignore` (nested ones too) and always skipping `.git/`, `node_modules/`, `.xray/`, framework build output (`.next/`, `.nuxt/`, `.svelte-kit/`, …) and minified files, vendored code (`third_party/`, `3rdparty/`, `thirdparty/`, `vendor/`) and Python and CMake build output (`__pycache__/`, `.venv/`, `venv/`, `.tox/`, `.mypy_cache/`, `.pytest_cache/`, `cmake-build-*/`). Each file gets a SHA-256 `content_hash`.
 2. **Parse.** Load the project with [ts-morph](https://ts-morph.com), using the root `tsconfig.json` or `jsconfig.json` so path aliases like `@/lib/db` resolve. JavaScript is parsed too.
 3. **Extract symbols.** Functions (including `const fn = () => {}`), classes and their methods, interfaces, type aliases, enums and exported variables become `symbol` nodes under their file, each with its line range.
 4. **Extract edges.**
@@ -207,9 +207,28 @@ Every edge links to `evidence`: the file, line range and parser rule (`ts-morph:
 
 **Incremental re-indexing.** Only files whose `content_hash` changed are re-extracted, together with the files that have edges into them, since their edges may now point at renamed or moved symbols. Adding a file also re-checks files with unresolved imports. Changing `tsconfig.json`, `jsconfig.json` or `package.json` triggers a full re-extraction. On excalidraw, a one-file edit re-indexes in about 2.6 s, compared with 17.6 s for a full run.
 
+Upgrading X-Ray to a version that extracts more (such as the C/C++ and Python support) re-extracts every file once, on the next index.
+
+### C/C++ and Python
+
+There is no type checker here, so X-Ray separates what the syntax proves from what it infers:
+
+| | C/C++ | Python |
+| --- | --- | --- |
+| Files | `.c`, `.h`, `.cc`, `.cpp`, `.cxx`, `.hh`, `.hpp`, `.hxx`, `.inl`, `.ipp`, `.tpp` | `.py` |
+| Symbols | Functions, classes, structs, unions, enums and typedef'd structs, named by namespace (`geo::Vec2::length`). Methods defined outside their class (`void Body::step() {}`) are found too. `static` functions are file-local. | Functions, classes and methods (`Service.create`). Names starting with `_` are private. |
+| Imports, **deterministic** | `#include "x.h"` that exists beside the including file | `import a.b`, `from .x import y` and `from pkg import module` that name a file in the repository (package roots and `src/` layouts included) |
+| Imports, **heuristic** | `#include` found elsewhere by path suffix: 0.9 for one match, 0.7 if several | |
+| External | Standard headers → `ext:std:vector`; other `<lib/…>` headers → `ext:lib:lib` | Standard library → `ext:python:json`; everything else → `ext:pypi:requests` |
+| Calls (always **heuristic**) | Same file 0.9; through `this` or a visible `Class::` scope 0.85; in an included file 0.8; a unique name elsewhere 0.6 (0.5 for methods). Names matching several definitions are skipped rather than guessed. | An imported or local name 0.9; `self.method()` 0.85; `obj.method()` on an object of unknown type 0.5 when only one method has that name. Module-level calls belong to the file. |
+
+The main path prefers an entry file that defines `main()`, and only follows links with confidence 0.8 or higher, so a name-only guess can't send it into an unrelated part of the codebase. Unresolved `#include`s and imports are listed in `metadata.unresolvedImports`, as for TypeScript.
+
 **Known limitations.**
-- Only the root `tsconfig.json` is read, so aliases defined in a nested package's config won't resolve.
-- Calls on CommonJS `module.exports` objects are not tracked.
+- C/C++: macros are not expanded and include paths from CMake or `compile_commands.json` are not read; overloads and templates are matched by name, not by signature.
+- Python: types are not inferred, so `obj.method()` only resolves when the method name is unique; dynamic imports (`importlib`) are not tracked.
+- TypeScript: only the root `tsconfig.json` is read, so aliases defined in a nested package's config won't resolve.
+- JavaScript: calls on CommonJS `module.exports` objects are not tracked.
 - Files over 1 MB are not parsed.
 
 ## Evidence graph
@@ -248,4 +267,5 @@ The sources run directly through [tsx](https://tsx.is), so there is no build ste
 - [ ] Framework adapters: routes (`defines-route`), database access (`reads-table` / `writes-table`), env config
 - [x] **Grounded AI explanations.** `xray ask`, `POST /api/ask` and *Explain with AI*: bring your own key (Anthropic, OpenAI, Gemini or Ollama), cited evidence, checked citations
 - [x] **Report export.** Markdown with a Mermaid cluster diagram, and the JSON graph snapshot
+- [x] **C/C++ and Python.** Tree-sitter adapters (WebAssembly, no native build) with deterministic includes and imports and confidence-ranked heuristic calls
 - [ ] SVG export of the current view
