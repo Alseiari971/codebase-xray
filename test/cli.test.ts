@@ -43,6 +43,19 @@ test('index builds the evidence graph in <path>/.xray', async () => {
   assert.ok(existsSync(join(root, '.xray', 'index.db')));
 });
 
+test('index reports the extracted graph and honours --full', async () => {
+  const root = makeRepo({
+    'src/a.ts': "import { b } from './b';\nexport function a() { return b(); }\n",
+    'src/b.ts': 'export function b() { return 1; }\n',
+  });
+  const first = await run('index', root);
+  assert.match(first.out, /Parsed 2 files\./);
+  assert.match(first.out, /2 symbols, 1 import edges, 1 call edges/);
+
+  assert.match((await run('index', root)).out, /Nothing to re-parse\./);
+  assert.match((await run('index', root, '--full')).out, /Parsed 2 files\./);
+});
+
 test('--db overrides the index location', async () => {
   const root = makeRepo({ 'a.ts': '' });
   const db = join(makeRepo({}), 'custom.db');

@@ -18,7 +18,19 @@ export interface ScanResult {
   skipped: number;
 }
 
-const ALWAYS_IGNORED = ['.git/', 'node_modules/', '.xray/'];
+// Skipped even without a .gitignore: VCS data, dependencies, our own index,
+// and framework build output that would flood the graph with generated code.
+const ALWAYS_IGNORED = [
+  '.git/', 'node_modules/', '.xray/',
+  '.next/', '.nuxt/', '.svelte-kit/', '.turbo/', '.vercel/', 'coverage/',
+  '*.min.js', '*.min.css',
+];
+
+/** Ignore rules from one .gitignore; patterns are relative to `base`. */
+interface IgnoreScope {
+  base: string;
+  ig: Ignore;
+}
 
 const LANGUAGE_BY_EXTENSION: Record<string, string> = {
   '.ts': 'typescript', '.tsx': 'typescript', '.mts': 'typescript', '.cts': 'typescript',
@@ -51,30 +63,29 @@ export function detectLanguage(path: string): string | undefined {
 }
 
 /**
- * Walks a repository and hashes every source file, honouring the root .gitignore.
- * Nested .gitignore files are not yet supported.
+ * Walks a repository and hashes every source file, honouring .gitignore files
+ * at every level. A nested .gitignore cannot re-include (`!pattern`) a path
+ * that a parent .gitignore excluded.
  */
 export function scanRepository(root: string): ScanResult {
-  const ig = ignore().add(ALWAYS_IGNORED);
-  const gitignore = join(root, '.gitignore');
-  if (existsSync(gitignore)) ig.add(readFileSync(gitignore, 'utf8'));
-
   const result: ScanResult = { files: [], skipped: 0 };
-  walk(root, '', ig, result);
+  walk(root, '', [{ base: '', ig: ignore().add(ALWAYS_IGNORED) }], result);
   result.files.sort((a, b) => a.path.localeCompare(b.path));
   return result;
 }
 
-function walk(root: string, relDir: string, ig: Ignore, result: ScanResult): void {
+function walk(root: string, relDir: string, parentScopes: IgnoreScope[], result: ScanResult): void {
+  const scopes = withGitignore(root, relDir, parentScopes);
+
   for (const entry of readdirSync(join(root, relDir), { withFileTypes: true })) {
     const rel = relDir ? `${relDir}/${entry.name}` : entry.name;
 
     if (entry.isDirectory()) {
-      if (!ig.ignores(`${rel}/`)) walk(root, rel, ig, result);
+      if (!isIgnored(scopes, `${rel}/`)) walk(root, rel, scopes, result);
       continue;
     }
     // Symlinks and special files are skipped so the walk cannot escape the repo.
-    if (!entry.isFile() || ig.ignores(rel)) continue;
+    if (!entry.isFile() || isIgnored(scopes, rel)) continue;
 
     const language = detectLanguage(rel);
     if (!language) {
@@ -92,4 +103,14 @@ function walk(root: string, relDir: string, ig: Ignore, result: ScanResult): voi
       size: content.length,
     });
   }
+}
+
+function withGitignore(root: string, relDir: string, scopes: IgnoreScope[]): IgnoreScope[] {
+  const gitignore = join(root, relDir, '.gitignore');
+  if (!existsSync(gitignore)) return scopes;
+  return [...scopes, { base: relDir, ig: ignore().add(readFileSync(gitignore, 'utf8')) }];
+}
+
+function isIgnored(scopes: IgnoreScope[], rel: string): boolean {
+  return scopes.some(({ base, ig }) => ig.ignores(base ? rel.slice(base.length + 1) : rel));
 }
