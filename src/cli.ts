@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { openDatabase, type XrayDb } from './db/database.ts';
@@ -8,7 +8,8 @@ import { traceQuestion } from './graph/question.ts';
 import { resolveTarget, TargetError } from './graph/resolve.ts';
 import { indexRepository } from './indexer/indexer.ts';
 import { DEFAULT_QUESTION_DEPTH } from './server/flow.ts';
-import { describeNodes, diffLines, flowTree, impactLines, impactSummary, label } from './report.ts';
+import { describeNodes, diffLines, exportReport, flowTree, impactLines, impactSummary, label } from './report.ts';
+import { AiConfigError, ask } from './ai/explain.ts';
 import { bundleClient } from './server/bundle.ts';
 import { startServer, type RunningServer } from './server/server.ts';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -43,6 +44,8 @@ Usage:
                               (alias: xray --uncommitted)
   xray flow <question> [path] Trace a feature, e.g. xray flow "how does checkout work?"
   xray impact <target> [path] Blast radius of a file, symbol or node id: what depends on it
+  xray ask <question> [path]  Explain a feature with AI, grounded in (and citing) the evidence graph
+  xray export [path]          Architecture report: --format md (default, with a Mermaid diagram) or json
   xray mcp <path>             Read-only MCP server (stdio) for Claude Code, Cursor, Windsurf, ...
 
 Options:
@@ -52,6 +55,10 @@ Options:
   --base <ref>                Git ref to diff against (default: working tree vs HEAD)
   --depth <number>            Hops to follow for diff, flow and impact (defaults: 3, 5, 4)
   --direction <dir>           For impact: upstream (default), downstream or both
+  --provider <name>           For ask: anthropic, openai, gemini or ollama (default: the first configured)
+  --model <id>                For ask: the model to use (default per provider, or XRAY_MODEL)
+  --format <md|json>          For export (default md)
+  --out <file>                For export: write to a file instead of stdout
   -h, --help                  Show this help
   -v, --version               Show the version`;
 
@@ -62,6 +69,10 @@ const OPTIONS = {
   base: { type: 'string' },
   depth: { type: 'string' },
   direction: { type: 'string', default: 'upstream' },
+  provider: { type: 'string' },
+  model: { type: 'string' },
+  format: { type: 'string', default: 'md' },
+  out: { type: 'string' },
   uncommitted: { type: 'boolean', default: false },
   help: { type: 'boolean', short: 'h', default: false },
   version: { type: 'boolean', short: 'v', default: false },
@@ -100,6 +111,10 @@ export async function main(argv: string[] = process.argv.slice(2), io: Io = defa
         return flow(rest, values, io);
       case 'impact':
         return impact(rest, values, io);
+      case 'ask':
+        return await askCommand(rest, values, io);
+      case 'export':
+        return exportCommand(rest, values, io);
       case 'mcp':
         return await mcp(rest, values, io);
       default:
@@ -226,6 +241,56 @@ function impact(args: string[], values: Values, io: Io): number {
     }
     io.out(`  ${impactSummary(result)} ${verb}.`);
     for (const line of impactLines(db, result)) io.out(line);
+    return 0;
+  });
+}
+
+async function askCommand(args: string[], values: Values, io: Io): Promise<number> {
+  const [question, ...rest] = args;
+  if (!question) throw new UsageError('`xray ask` needs a question, e.g. xray ask "how does checkout work?"');
+  const root = optionalRoot(rest, 0, 'ask');
+  const db = openDatabase(requireIndex(root, values));
+  try {
+    let result;
+    try {
+      result = await ask(db, root, question, { provider: values.provider, model: values.model });
+    } catch (error) {
+      if (error instanceof AiConfigError) throw new UsageError(error.message);
+      throw error;
+    }
+    if (result.provider && result.answer !== null) {
+      io.out(`${result.provider.name} (${result.provider.model}), from ${result.evidence.nodes.length} traced nodes and ${result.evidence.edges.length} edges:`);
+      io.out('');
+      io.out(result.answer);
+      io.out('');
+      io.out(`Citations checked: ${result.citations.valid.length} match the evidence.`);
+      if (result.notice) io.err(`Warning: ${result.notice}`);
+      return 0;
+    }
+    io.out(result.notice ?? '');
+    if (result.trace.length > 0) {
+      io.out('');
+      for (const line of result.trace) io.out(line);
+    }
+    return result.trace.length > 0 ? 0 : 1;
+  } finally {
+    db.close();
+  }
+}
+
+function exportCommand(args: string[], values: Values, io: Io): number {
+  const format = values.format;
+  if (format !== 'md' && format !== 'json') throw new UsageError(`--format must be md or json, got ${format}`);
+  const root = optionalRoot(args, 0, 'export');
+  return withIndex(root, values, (db) => {
+    const report = exportReport(db, root, format);
+    if (values.out) {
+      const target = resolve(values.out);
+      writeFileSync(target, report);
+      io.out(`Wrote ${format === 'md' ? 'the architecture report' : 'the graph snapshot'} to ${target}`);
+    } else {
+      io.out(report.trimEnd());
+    }
     return 0;
   });
 }

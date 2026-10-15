@@ -37,3 +37,6 @@ jobs:
           node bin/xray.js diff .
           node bin/xray.js flow "how does indexing work?" .
           node bin/xray.js impact clusterFiles .
+          node bin/xray.js export . --out ARCHITECTURE.md
+          node bin/xray.js export . --format json --out graph.json
+          node bin/xray.js ask "how does indexing work?" .

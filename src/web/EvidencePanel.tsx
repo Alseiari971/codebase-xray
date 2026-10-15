@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
 import type { ChangedFile, GraphEdge, GraphNode, ResolutionType, Snippet } from '../shared/api-types.ts';
 import { api } from './api.ts';
+import { AnswerView, type AnswerState } from './AnswerView.tsx';
 import type { GraphIndex, VisibleEdge } from './model.ts';
 
-export type Selection = { kind: 'node'; id: string } | { kind: 'edge'; edge: VisibleEdge } | null;
+export type Selection = { kind: 'node'; id: string } | { kind: 'edge'; edge: VisibleEdge } | { kind: 'answer' } | null;
 
 interface Props {
   index: GraphIndex;
@@ -18,6 +19,9 @@ interface Props {
   onImpact: (id: string) => void;
   onFocus: (id: string) => void;
   onShowInMap: (id: string) => void;
+  answer: AnswerState | null;
+  aiLabel: string | null;
+  onSelectEdgeId: (id: number) => void;
 }
 
 /** Fetches whenever `key` changes and ignores responses for a key that is no longer current. */
@@ -60,7 +64,11 @@ export function EvidencePanel(props: Props) {
   }
   return (
     <aside className="panel">
-      {selection.kind === 'node' ? <NodeDetails {...props} id={selection.id} /> : <EdgeDetails {...props} edge={selection.edge} />}
+      {selection.kind === 'node' && <NodeDetails {...props} id={selection.id} />}
+      {selection.kind === 'edge' && <EdgeDetails {...props} edge={selection.edge} />}
+      {selection.kind === 'answer' && props.answer && (
+        <AnswerView answer={props.answer} providerLabel={props.aiLabel} onSelectNode={props.onSelectNode} onSelectEdge={props.onSelectEdgeId} />
+      )}
     </aside>
   );
 }

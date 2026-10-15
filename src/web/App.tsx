@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { DiffResponse, GraphResponse } from '../shared/api-types.ts';
+import type { AiStatus, DiffResponse, GraphResponse } from '../shared/api-types.ts';
 import { api } from './api.ts';
+import type { AnswerState } from './AnswerView.tsx';
 import { EvidencePanel, type Selection } from './EvidencePanel.tsx';
 import { FlatCanvas, type FlatHighlights } from './FlatCanvas.tsx';
 import { focusView, subgraphView } from './focus.ts';
@@ -28,10 +29,12 @@ export function App() {
   const [graph, setGraph] = useState<GraphResponse | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [diff, setDiff] = useState<DiffResponse | null>(null);
+  const [ai, setAi] = useState<AiStatus | null>(null);
 
   useEffect(() => {
     api.graph().then(setGraph, (error: Error) => setLoadError(error.message));
     api.diff().then(setDiff, () => setDiff(null));
+    api.ai().then(setAi, () => setAi(null));
   }, []);
 
   if (loadError) return <div className="splash error">Could not load the graph: {loadError}</div>;
@@ -41,12 +44,12 @@ export function App() {
   }
   return (
     <>
-      <Explorer graph={graph} diff={diff} />
+      <Explorer graph={graph} diff={diff} ai={ai} />
     </>
   );
 }
 
-function Explorer({ graph, diff }: { graph: GraphResponse; diff: DiffResponse | null }) {
+function Explorer({ graph, diff, ai }: { graph: GraphResponse; diff: DiffResponse | null; ai: AiStatus | null }) {
   const index = useMemo(() => indexGraph(graph), [graph]);
   const [mode, setMode] = useState<Mode>('map');
   const [selection, setSelection] = useState<Selection>(null);
@@ -74,6 +77,38 @@ function Explorer({ graph, diff }: { graph: GraphResponse; diff: DiffResponse | 
   const [traceError, setTraceError] = useState<string | null>(null);
   const [pathPick, setPathPick] = useState<{ from: string | null; to: string | null }>({ from: null, to: null });
   const traced = useMemo(() => (trace ? subgraphView(index, trace.nodeIds, trace.edgeIds) : null), [index, trace]);
+
+  const [answer, setAnswer] = useState<AnswerState | null>(null);
+  const aiLabel = ai?.provider ? `${ai.provider.name} (${ai.provider.model})` : null;
+
+  /** Explain a question with AI, grounded in its trace; without a provider the server returns the trace and how to set one up. */
+  const explain = (question: string) => {
+    setAnswer({ question, loading: true, error: null, response: null });
+    setSelection({ kind: 'answer' });
+    api.ask({ question }).then(
+      (response) => setAnswer((current) => (current?.question === question ? { ...current, loading: false, response } : current)),
+      (error: Error) => setAnswer((current) => (current?.question === question ? { ...current, loading: false, error: error.message } : current)),
+    );
+  };
+
+  const selectEdgeId = (id: number) => {
+    const edge = index.edgesById.get(id);
+    if (!edge) return;
+    setSelection({
+      kind: 'edge',
+      edge: {
+        id: `edge-${id}`,
+        source: edge.source,
+        target: edge.target,
+        relation: edge.relation,
+        relations: [edge.relation],
+        edgeIds: [id],
+        resolutionType: edge.resolutionType,
+        confidence: edge.confidence,
+        deterministicCount: edge.resolutionType === 'deterministic' ? 1 : 0,
+      },
+    });
+  };
 
   const name = useCallback((id: string) => index.nodes.get(id)?.symbol ?? index.nodes.get(id)?.name ?? id, [index]);
 
@@ -297,6 +332,9 @@ function Explorer({ graph, diff }: { graph: GraphResponse; diff: DiffResponse | 
         </div>
         <div className="modebar-tools">
           {tracing && <span className="muted">Tracing {tracing}…</span>}
+          {answer && selection?.kind !== 'answer' && (
+            <button className="link" onClick={() => setSelection({ kind: 'answer' })}>Back to the AI answer</button>
+          )}
           {traceError && <span className="error-text">{traceError}</span>}
           {(pathPick.from || pathPick.to) && (
             <span className="pick">
@@ -340,6 +378,15 @@ function Explorer({ graph, diff }: { graph: GraphResponse; diff: DiffResponse | 
           )}
           {mode === 'trace' && trace && (
             <>
+              {trace.kind === 'feature' && trace.entries.length > 0 && (
+                <button
+                  className="ai-button"
+                  onClick={() => explain(trace.title)}
+                  title={aiLabel ? `Explain this flow with ${aiLabel}, citing the traced evidence` : `No AI provider configured: set ${ai?.envVars.join(', ') ?? 'an API key'} to get a written explanation`}
+                >
+                  ✦ Explain with AI
+                </button>
+              )}
               <span className="trace-status">{trace.status}</span>
               {trace.entries.map((id) => (
                 <button key={id} className="link" onClick={() => setSelection({ kind: 'node', id })}>{name(id)}</button>
@@ -410,6 +457,9 @@ function Explorer({ graph, diff }: { graph: GraphResponse; diff: DiffResponse | 
           onImpact={traceImpact}
           onFocus={focusOn}
           onShowInMap={showInMap}
+          answer={answer}
+          aiLabel={aiLabel}
+          onSelectEdgeId={selectEdgeId}
         />
       </main>
     </div>
