@@ -178,6 +178,56 @@ export interface DiffResponse {
   impact: ImpactResponse;
 }
 
+export type AiProviderName = 'anthropic' | 'openai' | 'gemini' | 'ollama';
+
+/** GET /api/ai: which provider `POST /api/ask` would use, if any. */
+export interface AiStatus {
+  provider: { name: AiProviderName; model: string } | null;
+  /** Environment variables that enable a provider, in the order they are tried. */
+  envVars: string[];
+}
+
+/** POST /api/ask */
+export interface AskRequest {
+  question: string;
+  provider?: AiProviderName;
+  model?: string;
+}
+
+/** The compact, cited evidence an answer may draw on; nothing else is sent to the model. */
+export interface EvidencePackage {
+  question: string;
+  keywords: string[];
+  entryPoints: string[];
+  nodes: { id: string; kind: string; name: string; at: string | null; depth: number }[];
+  edges: {
+    id: number;
+    source: string;
+    target: string;
+    relation: string;
+    resolutionType: ResolutionType;
+    confidence: number;
+    evidence: { id: number; at: string; code: string }[];
+  }[];
+  sources: { nodeId: string; at: string; code: string }[];
+  /** Parts of the trace left out to keep the package small. */
+  omitted: { nodes: number; edges: number };
+}
+
+export interface AskResponse {
+  question: string;
+  provider: { name: AiProviderName; model: string } | null;
+  /** The model's explanation, citing ids from `evidence`. Null when no model was called. */
+  answer: string | null;
+  /** Shown instead of (or alongside) an answer: no provider configured, or nothing matched. */
+  notice: string | null;
+  /** The deterministic flow trace as text, always available without AI. */
+  trace: string[];
+  evidence: EvidencePackage;
+  /** Citations in the answer that are, and are not, in the evidence package. */
+  citations: { valid: string[]; unknown: string[] };
+}
+
 export interface ApiError {
   error: string;
 }

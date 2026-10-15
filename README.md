@@ -6,7 +6,7 @@
 
 Codebase X-Ray turns a repository into an interactive map of how it actually works: architecture, dependencies, feature flows, and change impact. Every relationship on the map traces back to exact source lines. The same local evidence graph serves a browser UI and an MCP server, so you and your coding agent work from the same facts.
 
-> **Status: Phase 5 (MCP server).** `xray ./my-project` indexes a TypeScript/JavaScript repository and opens an interactive map. Click any node or edge for the exact source lines behind it, and ask "how does login work?" to trace a feature. Before you commit, uncommitted changes light up amber and everything that calls or imports them lights up red. `xray mcp` gives your coding agent read access to the same evidence graph, with the same ids.
+> **Status: MVP complete.** `xray ./my-project` indexes a TypeScript/JavaScript repository and opens an interactive map. Click any node or edge for the exact source lines behind it, and ask "how does login work?" to trace a feature. Before you commit, uncommitted changes light up amber and everything that calls or imports them lights up red. `xray mcp` gives your coding agent read access to the same evidence graph, with the same ids. With an API key, AI explains a traced flow while citing that evidence. `xray export` writes a README-ready architecture report.
 
 ![Focus view: indexRepository in the middle, its callers on the left and what it calls on the right, with its source in the evidence panel](docs/ui-focus.jpg)
 
@@ -34,8 +34,10 @@ Then open http://localhost:4173. To put `xray` on your PATH, run `npm link` once
 | `xray flow "<question>" [path]` | Trace a feature from the symbols its words name | Working |
 | `xray impact <target> [path]` | Blast radius of a file, symbol name or node id | Working |
 | `xray mcp <path>` | Read-only MCP server (stdio) for Claude Code, Cursor, Windsurf and other agents | Working |
+| `xray ask "<question>" [path]` | AI explanation of a feature, grounded in and citing the traced evidence (bring your own key) | Working |
+| `xray export [path]` | Architecture report: `--format md` (default, with a Mermaid diagram) or `json` (graph snapshot) | Working |
 
-Options: `--db <file>` to store the index somewhere else, `--full` to re-extract every file, `--port <n>` for `serve`, `--base <ref>` for `diff`, `--depth <n>` for how many hops `diff`, `flow` and `impact` follow, `--direction upstream|downstream|both` for `impact`.
+Options: `--db <file>` to store the index somewhere else, `--full` to re-extract every file, `--port <n>` for `serve`, `--base <ref>` for `diff`, `--depth <n>` for how many hops `diff`, `flow` and `impact` follow, `--direction upstream|downstream|both` for `impact`, `--provider` and `--model` for `ask`, `--format md|json` and `--out <file>` for `export`.
 
 ```text
 $ xray index ./excalidraw
@@ -80,6 +82,36 @@ Blast radius of hashPassword  src/auth/hash.ts:3 (upstream, up to 4 hops):
   3  src/api/server.js  (file-level)
 ```
 
+## Ask AI (optional)
+
+The core never needs a model. When one is configured, `xray ask` and the **Explain with AI** button on a traced feature explain the flow in prose. The model sees only the evidence the deterministic tracer found: the entry points, traced nodes, edges with their evidence ids, and a few source snippets. It never sees the whole repository.
+
+```bash
+export OPENAI_API_KEY=...        # or ANTHROPIC_API_KEY, GEMINI_API_KEY, or OLLAMA_HOST for a local model
+xray ask "how does login work?" ./my-project
+```
+
+- **Providers.** The first configured of `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY` and `OLLAMA_HOST` is used; pick one with `--provider`. The default models are `claude-opus-5-5`, `gpt-4.1-mini`, `gemini-2.5-flash` and `llama3.1`; change them with `--model` or `XRAY_MODEL`. Requests use plain `fetch` with no SDKs. Claude requests opt into server-side refusal fallbacks.
+- **Grounding.** The system prompt requires every claim to cite `[sym:…]`, `[edge:12]` or `[evidence:34]` and to label anything beyond the evidence `Inference:`. Afterwards, every citation in the answer is checked against the evidence package, and citations the model made up are flagged, struck through in the UI.
+- **No provider?** You get the deterministic flow trace and a note on which variable to set. Nothing is sent anywhere.
+
+In the UI, each citation is a link: click it to open that node, or the edge and evidence it names.
+
+## Export a report
+
+```bash
+xray export ./my-project --out ARCHITECTURE.md       # Markdown with a Mermaid diagram
+xray export ./my-project --format json --out graph.json
+```
+
+The Markdown report covers:
+- repository totals, plus counts of heuristic edges and unresolved imports;
+- a Mermaid `graph TD` of cluster dependencies;
+- each cluster's largest files, internal dependencies, neighbours and packages;
+- entry points (source files nothing else uses), the most depended-on code, and every external package.
+
+GitHub renders the diagram directly. The JSON snapshot is the portable graph: every node, edge (with its evidence ids) and piece of evidence, with repository-relative paths only.
+
 ## The UI
 
 `xray serve` shows one canvas and an evidence panel. The canvas never tries to draw the whole graph at once; it has three views.
@@ -109,6 +141,8 @@ The server only listens on `127.0.0.1` and rejects requests whose `Host` header 
 | `GET /api/edge/:id/evidence` | The cited lines for each piece of evidence behind an edge |
 | `POST /api/flow` | `{ from, to?, maxDepth?, relations?, limit? }` returns the shortest paths, or everything downstream without `to`. `{ question }` returns the matched entry points and their traced flow. |
 | `POST /api/impact` | `{ ids, direction?, maxDepth?, relations? }` returns the blast radius: affected nodes with their distance, grouped by file |
+| `GET /api/ai` | Which AI provider and model `POST /api/ask` would use, if any |
+| `POST /api/ask` | `{ question, provider?, model? }` returns the grounded answer, its checked citations, the evidence package, and the deterministic trace |
 | `GET /api/diff?base=<ref>` | Uncommitted changes (staged, unstaged, untracked), the symbols whose lines they touch (flagged `git-changed`), and the blast radius of those changes |
 
 ## Flow and impact
@@ -195,7 +229,7 @@ Node ids are readable and stable across runs: `cluster:src/auth`, `file:src/auth
 ## Development
 
 ```bash
-npm test           # node:test suite (schema, clustering, adapter, indexer, diff, traversal, server API, MCP, UI model and layout, CLI)
+npm test           # node:test suite (schema, clustering, adapter, indexer, diff, traversal, server API, MCP, AI, export, UI model and layout, CLI)
 npm run typecheck  # tsc --noEmit
 ```
 
@@ -209,5 +243,6 @@ The sources run directly through [tsx](https://tsx.is), so there is no build ste
 - [x] **Phase 4: Diff review and flow tracing.** Recursive-CTE traversal, question-driven feature tracing, blast radius, and `git-changed` flags with change impact
 - [x] **Phase 5: MCP server.** Read-only stdio tools `get_architecture_clusters`, `trace_flow`, `get_blast_radius`, `get_node_evidence` and `get_changed_nodes`, sharing ids with the UI
 - [ ] Framework adapters: routes (`defines-route`), database access (`reads-table` / `writes-table`), env config
-- [ ] Grounded AI explanations (optional, bring your own key)
-- [ ] Exports: SVG, JSON, Markdown
+- [x] **Grounded AI explanations.** `xray ask`, `POST /api/ask` and *Explain with AI*: bring your own key (Anthropic, OpenAI, Gemini or Ollama), cited evidence, checked citations
+- [x] **Report export.** Markdown with a Mermaid cluster diagram, and the JSON graph snapshot
+- [ ] SVG export of the current view

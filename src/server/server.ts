@@ -1,8 +1,9 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { AiConfigError, AiProviderError, ask, detectProvider, PROVIDER_ENV, type AskOptions } from '../ai/explain.ts';
 import type { XrayDb } from '../db/database.ts';
 import { DiffBaseError, getDiff } from '../git/diff.ts';
-import type { ApiError, FlowRequest, ImpactRequest } from '../shared/api-types.ts';
+import type { AiStatus, ApiError, AskRequest, FlowRequest, ImpactRequest } from '../shared/api-types.ts';
 import { bundleClient } from './bundle.ts';
 import { FlowRequestError, traceFlow, traceImpact } from './flow.ts';
 import { getEdgeEvidence, getGraph, getNodeEvidence, NotFoundError } from './queries.ts';
@@ -14,6 +15,8 @@ export interface ServerOptions {
   /** 0 picks a free port. */
   port?: number;
   host?: string;
+  /** Environment and fetch for `POST /api/ask`; tests inject a mock provider here. */
+  ai?: AskOptions;
 }
 
 export interface RunningServer {
@@ -94,6 +97,23 @@ export function startServer(options: ServerOptions): Promise<RunningServer> {
     },
     {
       method: 'GET',
+      pattern: /^\/api\/ai$/,
+      handle: () => {
+        const provider = detectProvider(options.ai?.env ?? process.env);
+        return json({ provider: provider ? { name: provider.name, model: provider.model } : null, envVars: Object.values(PROVIDER_ENV) } satisfies AiStatus);
+      },
+    },
+    {
+      method: 'POST',
+      pattern: /^\/api\/ask$/,
+      handle: async (_match, req) => {
+        const body = (await readJson(req)) as AskRequest;
+        if (typeof body?.question !== 'string' || body.question.trim() === '') throw new BadRequestError('`question` must be a non-empty string');
+        return json(await ask(db, root, body.question, { ...options.ai, provider: body.provider, model: body.model }));
+      },
+    },
+    {
+      method: 'GET',
       pattern: /^\/api\/diff$/,
       handle: (_match, _req, url) => json(getDiff(db, root, url.searchParams.get('base') ?? undefined)),
     },
@@ -160,9 +180,11 @@ function errorResponse(status: number, message: string): Response {
 function toErrorResponse(error: unknown): Response {
   const message = error instanceof Error ? error.message : String(error);
   if (error instanceof NotFoundError) return errorResponse(404, message);
-  if (error instanceof BadRequestError || error instanceof FlowRequestError || error instanceof DiffBaseError) {
+  if (error instanceof BadRequestError || error instanceof FlowRequestError || error instanceof DiffBaseError || error instanceof AiConfigError) {
     return errorResponse(400, message);
   }
+  // The model provider failed, not this server.
+  if (error instanceof AiProviderError) return errorResponse(502, message);
   return errorResponse(500, message);
 }
 

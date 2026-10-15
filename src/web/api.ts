@@ -1,5 +1,8 @@
 import type {
+  AiStatus,
   ApiError,
+  AskRequest,
+  AskResponse,
   DiffResponse,
   EdgeEvidenceResponse,
   FlowRequest,
@@ -34,4 +37,11 @@ export const api = {
       body: JSON.stringify(body),
     }),
   diff: () => request<DiffResponse>('/api/diff'),
+  ai: () => request<AiStatus>('/api/ai'),
+  ask: (body: AskRequest) =>
+    request<AskResponse>('/api/ask', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
 };
