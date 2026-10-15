@@ -16,7 +16,7 @@
   "scripts": {
     "xray": "node bin/xray.js",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test test/schema.test.ts test/cluster.test.ts test/typescript-adapter.test.ts test/indexer.test.ts test/diff.test.ts test/traverse.test.ts test/web-model.test.ts test/server.test.ts test/mcp.test.ts test/cli.test.ts"
+    "test": "node --import tsx --test test/schema.test.ts test/cluster.test.ts test/typescript-adapter.test.ts test/indexer.test.ts test/diff.test.ts test/traverse.test.ts test/web-model.test.ts test/web-focus.test.ts test/server.test.ts test/mcp.test.ts test/cli.test.ts"
   },
   "repository": {
     "type": "git",

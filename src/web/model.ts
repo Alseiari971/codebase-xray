@@ -156,37 +156,45 @@ export function buildView(index: GraphIndex, state: ViewState): GraphView {
     // An edge from a box to something inside it carries no information on screen.
     if (isVisibleAncestor(source, target) || isVisibleAncestor(target, source)) continue;
 
-    // One line per pair of nodes: imports and calls between the same two
-    // boxes would otherwise double every edge on screen.
-    const key = `${source}\u0000${target}`;
-    const existing = edges.get(key);
-    if (!existing) {
-      edges.set(key, {
-        id: key,
-        source,
-        target,
-        relation: edge.relation,
-        relations: [edge.relation],
-        edgeIds: [edge.id],
-        resolutionType: edge.resolutionType,
-        confidence: edge.confidence,
-        deterministicCount: edge.resolutionType === 'deterministic' ? 1 : 0,
-      });
-      continue;
-    }
-    existing.edgeIds.push(edge.id);
-    if (edge.resolutionType === 'deterministic') existing.deterministicCount++;
-    if (!existing.relations.includes(edge.relation)) {
-      existing.relations = [...existing.relations, edge.relation].sort();
-      if (edge.relation === 'calls') existing.relation = 'calls';
-    }
-    existing.confidence = Math.min(existing.confidence, edge.confidence);
-    if (RESOLUTION_STRENGTH[edge.resolutionType] < RESOLUTION_STRENGTH[existing.resolutionType]) {
-      existing.resolutionType = edge.resolutionType;
-    }
+    rollUpEdge(edges, source, target, edge);
   }
 
   return { nodes, edges: [...edges.values()], byId, representative };
+}
+
+/**
+ * Adds `edge` to the on-screen edge between `source` and `target`. There is
+ * one line per pair of nodes: imports and calls between the same two boxes
+ * would otherwise double every edge on screen.
+ */
+export function rollUpEdge(edges: Map<string, VisibleEdge>, source: string, target: string, edge: GraphEdge): void {
+  const key = `${source}\u0000${target}`;
+  const existing = edges.get(key);
+  if (!existing) {
+    edges.set(key, {
+      id: key,
+      source,
+      target,
+      relation: edge.relation,
+      relations: [edge.relation],
+      edgeIds: [edge.id],
+      resolutionType: edge.resolutionType,
+      confidence: edge.confidence,
+      deterministicCount: edge.resolutionType === 'deterministic' ? 1 : 0,
+    });
+    return;
+  }
+  if (existing.edgeIds.includes(edge.id)) return;
+  existing.edgeIds.push(edge.id);
+  if (edge.resolutionType === 'deterministic') existing.deterministicCount++;
+  if (!existing.relations.includes(edge.relation)) {
+    existing.relations = [...existing.relations, edge.relation].sort();
+    if (edge.relation === 'calls') existing.relation = 'calls';
+  }
+  existing.confidence = Math.min(existing.confidence, edge.confidence);
+  if (RESOLUTION_STRENGTH[edge.resolutionType] < RESOLUTION_STRENGTH[existing.resolutionType]) {
+    existing.resolutionType = edge.resolutionType;
+  }
 }
 
 /** Marks every visible node that stands for at least one of `ids`, with how many it stands for. */
