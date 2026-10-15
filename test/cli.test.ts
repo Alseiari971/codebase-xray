@@ -67,21 +67,18 @@ test('--db overrides the index location', async () => {
   assert.ok(!existsSync(join(root, '.xray')));
 });
 
-test('serve, diff and mcp require an index first', async () => {
+// `xray mcp` indexes on its own and is tested over real stdio in mcp.test.ts.
+test('serve, diff, flow and impact require an index first', async () => {
   const root = makeRepo({ 'a.ts': '' });
-  for (const argv of [['serve', root], ['diff', root], ['mcp', root], ['--uncommitted', root]]) {
+  for (const argv of [['serve', root], ['diff', root], ['--uncommitted', root], ['flow', 'login', root], ['impact', 'a.ts', root]]) {
     const { code, err } = await run(...argv);
     assert.equal(code, 1, argv.join(' '));
     assert.match(err, /No index found/);
   }
 });
 
-test('mcp reports it is not implemented yet', async () => {
-  const root = makeRepo({ 'a.ts': '' });
-  await run('index', root);
-  const { code, err } = await run('mcp', root);
-  assert.equal(code, 1);
-  assert.match(err, /not implemented yet/);
+test('mcp requires a path', async () => {
+  assert.equal((await run('mcp')).code, 2);
 });
 
 test('serve runs the UI and API until shutdown', async () => {
@@ -163,7 +160,7 @@ test('impact prints the blast radius of a symbol, file or node id', async () => 
 
   const missing = await run('impact', 'nothingLikeThis', root);
   assert.equal(missing.code, 2);
-  assert.match(missing.err, /No file, symbol or node named/);
+  assert.match(missing.err, /No file, symbol, package or node named/);
   assert.equal((await run('impact', 'login', root, '--direction', 'sideways')).code, 2);
   assert.equal((await run('impact', 'login', root, '--depth', '0')).code, 2);
 });
