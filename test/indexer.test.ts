@@ -1,23 +1,11 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { after, test } from 'node:test';
+import { test } from 'node:test';
 import { openDatabase, type XrayDb } from '../src/db/database.ts';
 import { indexRepository } from '../src/indexer/indexer.ts';
-import { makeRepo, writeFiles } from './helpers.ts';
-
-const FIXTURE = join(import.meta.dirname, 'fixtures', 'sample-app');
-
-/** A writable copy of the fixture, so tests can edit it and the ignored dir can exist without being committed. */
-function copyFixture(): string {
-  const root = mkdtempSync(join(tmpdir(), 'xray-fixture-'));
-  after(() => rmSync(root, { recursive: true, force: true }));
-  cpSync(FIXTURE, root, { recursive: true });
-  writeFiles(root, { 'generated/schema.ts': 'export const ignored = true;\n' });
-  return root;
-}
+import { copyFixture, makeRepo, writeFiles } from './helpers.ts';
 
 function rows<T>(db: XrayDb, sql: string, ...params: unknown[]): T[] {
   return db.prepare(sql).all(...params) as T[];

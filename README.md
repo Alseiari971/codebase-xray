@@ -6,7 +6,9 @@
 
 Codebase X-Ray turns a repository into an interactive map of how it actually works: architecture, dependencies, feature flows, and change impact. Every relationship on the map traces back to exact source lines. The same local evidence graph serves a browser UI and an MCP server, so you and your coding agent work from the same facts.
 
-> **Status: Phase 2 (AST indexer).** `xray index` builds a real evidence graph for TypeScript and JavaScript: symbols, imports, calls and folder clusters, every edge backed by source lines. The web UI, diff overlay and MCP server are still to come (see [Roadmap](#roadmap)).
+> **Status: Phase 3 (local server and UI).** `xray ./my-project` indexes a TypeScript/JavaScript repository and opens an interactive map in your browser. Click any node or edge to see the exact source lines behind it, trace paths between nodes, and see uncommitted changes highlighted. The MCP server is still to come (see [Roadmap](#roadmap)).
+
+![Tracing the path from indexRepository to clusterFiles, with the evidence panel showing the target's source](docs/ui-flow-trace.jpg)
 
 ## Quick start
 
@@ -16,20 +18,20 @@ Requires Node.js 20.6 or newer.
 git clone https://github.com/Alseiari971/codebase-xray.git
 cd codebase-xray
 npm install
-npm run xray -- index ../my-project
+npm run xray -- ../my-project
 ```
 
-To put `xray` on your PATH, run `npm link` once.
+Then open http://localhost:4173. To put `xray` on your PATH, run `npm link` once.
 
 ## Commands
 
 | Command | What it does | Status |
 | --- | --- | --- |
+| `xray <path>` | Index, then serve the map | Working |
 | `xray index <path>` | Build or refresh the evidence graph in `<path>/.xray/index.db` | Working |
-| `xray serve <path>` | Local web UI and HTTP/JSON API | Planned |
-| `xray diff [path]` / `xray --uncommitted` | Overlay uncommitted changes and their downstream impact | Planned |
+| `xray serve <path>` | Local web UI and HTTP/JSON API on `localhost` | Working |
+| `xray diff [path]` / `xray --uncommitted` | List uncommitted changes and the symbols they touch | Working |
 | `xray mcp <path>` | Read-only MCP server for Claude Code, Cursor, Windsurf, etc. | Planned |
-| `xray <path>` | Index, then serve | Index only for now |
 
 Options: `--db <file>` to store the index somewhere else, `--full` to re-extract every file, `--port <n>` for `serve`, `--base <ref>` for `diff`.
 
@@ -39,6 +41,42 @@ Indexed 926 files in 17578 ms (926 added, 0 updated, 0 unchanged, 0 removed; 389
 Parsed 710 files.
 Graph: 10 clusters, 4322 symbols, 4334 import edges, 11115 call edges, 83 external modules.
 ```
+
+```text
+$ xray diff
+3 files changed, 3 symbols touched (against HEAD):
+  D src/auth/hash.ts
+      hashPassword
+  ? src/auth/otp.ts  [index stale]
+  M src/db/user-repository.ts  [index stale]
+      UserRepository
+      UserRepository.findByEmail
+Some files changed since the last index; run `xray index` for exact symbol mapping.
+```
+
+## The map
+
+`xray serve` puts the graph canvas on the left and the evidence panel on the right.
+
+- **Zoom by expanding.** The map opens on folder clusters. Press `+` or double-click to expand a cluster into its files and a file into its symbols. Edges roll up to whatever is visible, so a collapsed cluster still shows what it depends on, with a count of the underlying edges.
+- **Evidence on click.** Click a node for its own source lines: a symbol's range with a little context, a file's contents, or every line that imports an external package. Click an edge for each underlying relationship, with its trust badge (*Deterministic* or *Heuristic · 70%*) and the exact cited lines. Lines that moved since indexing are flagged *stale*.
+- **Flow tracing.** Use *Trace from here* and *Trace to here* to light up the shortest paths between two nodes, or *Show downstream* for everything a node reaches.
+- **Diff overlay.** Files and symbols with uncommitted changes are marked Δ, and collapsed clusters show how many changes they contain.
+- **Search** files and symbols by name, then jump straight to them.
+
+The client is React + [React Flow](https://reactflow.dev) with a nested [dagre](https://github.com/dagrejs/dagre) layout. esbuild bundles it in memory (in about 100 ms) when the server starts, so there is still no build step.
+
+## HTTP API
+
+The server only listens on `127.0.0.1` and rejects requests whose `Host` header isn't `localhost`, which blocks DNS-rebinding attacks from reading your code. Types for every response are in [`src/shared/api-types.ts`](src/shared/api-types.ts).
+
+| Endpoint | Returns |
+| --- | --- |
+| `GET /api/graph` | Every node (clusters, files, symbols, externals) and edge, with metadata |
+| `GET /api/node/:id/evidence` | The node's source lines, read from disk using its stored line range |
+| `GET /api/edge/:id/evidence` | The cited lines for each piece of evidence behind an edge |
+| `POST /api/flow` | `{ from, to?, maxDepth?, relations?, limit? }` returns the shortest paths, or everything downstream without `to` |
+| `GET /api/diff?base=<ref>` | Uncommitted changes (staged, unstaged, untracked), mapped to files and the symbols whose lines they touch |
 
 ## How indexing works
 
@@ -80,7 +118,7 @@ Node ids are readable and stable across runs: `cluster:src/auth`, `file:src/auth
 ## Development
 
 ```bash
-npm test           # node:test suite (schema, clustering, adapter, indexer, CLI)
+npm test           # node:test suite (schema, clustering, adapter, indexer, diff, server API, UI model and layout, CLI)
 npm run typecheck  # tsc --noEmit
 ```
 
@@ -90,10 +128,9 @@ The sources run directly through [tsx](https://tsx.is), so there is no build ste
 
 - [x] **Phase 1: Foundation.** CLI skeleton, SQLite schema, incremental file indexing
 - [x] **Phase 2: AST indexer.** ts-morph adapter for symbols, imports and the call graph with evidence, plus folder clusters
+- [x] **Phase 3: Local server and UI.** HTTP/JSON API, React Flow map with an evidence panel, flow tracing, and the git diff overlay
 - [ ] Framework adapters: routes (`defines-route`), database access (`reads-table` / `writes-table`), env config
-- [ ] `xray serve`: HTTP/JSON API (`/api/graph`, `/api/node/:id/evidence`, `/api/flow`, `/api/diff`) and React Flow UI
-- [ ] Deterministic flow tracing and blast-radius queries
-- [ ] `xray diff`: Git working tree and branch diff overlay
+- [ ] Blast-radius queries and downstream impact for diffs
 - [ ] `xray mcp`: read-only MCP tools (`get_architecture_clusters`, `trace_flow`, `get_blast_radius`, `get_node_evidence`, `get_changed_nodes`)
 - [ ] Grounded AI explanations (optional, bring your own key)
 - [ ] Exports: SVG, JSON, Markdown
