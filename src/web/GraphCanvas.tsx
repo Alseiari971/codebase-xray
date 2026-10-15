@@ -6,6 +6,7 @@ import {
   MiniMap,
   Position,
   ReactFlow,
+  ReactFlowProvider,
   useReactFlow,
   type Edge,
   type Node,
@@ -121,6 +122,8 @@ interface Props {
   view: GraphView;
   highlights: Highlights;
   onSelectNode: (id: string) => void;
+  /** Double-click on a file, symbol or package: open it in Focus. */
+  onOpenNode: (id: string) => void;
   onSelectEdge: (edge: VisibleEdge) => void;
   onToggle: (id: string) => void;
   onClear: () => void;
@@ -128,7 +131,16 @@ interface Props {
   focus: { ids: string[]; seq: number } | null;
 }
 
-export function GraphCanvas({ view, highlights, onSelectNode, onSelectEdge, onToggle, onClear, focus }: Props) {
+/** Each canvas gets its own React Flow store, so switching views always starts with a fresh, fitted viewport. */
+export function GraphCanvas(props: Props) {
+  return (
+    <ReactFlowProvider>
+      <GraphCanvasInner {...props} />
+    </ReactFlowProvider>
+  );
+}
+
+function GraphCanvasInner({ view, highlights, onSelectNode, onOpenNode, onSelectEdge, onToggle, onClear, focus }: Props) {
   const boxes = useMemo(() => layoutView(view), [view]);
   const { fitView } = useReactFlow();
 
@@ -218,11 +230,15 @@ export function GraphCanvas({ view, highlights, onSelectNode, onSelectEdge, onTo
       edges={edges}
       nodeTypes={nodeTypes}
       onNodeClick={(_event, node) => onSelectNode(node.id)}
-      onNodeDoubleClick={(_event, node) => onToggle(node.id)}
+      // Clusters open in place; anything else opens in Focus.
+      onNodeDoubleClick={(_event, node) => (view.byId.get(node.id)?.node.layer === 'cluster' ? onToggle(node.id) : onOpenNode(node.id))}
       onEdgeClick={(_event, edge) => onSelectEdge((edge.data as { edge: VisibleEdge }).edge)}
       onPaneClick={onClear}
       nodesConnectable={false}
       elementsSelectable
+      fitView
+      fitViewOptions={{ padding: 0.12, maxZoom: 1.4 }}
+      zoomOnDoubleClick={false}
       minZoom={0.01}
       maxZoom={2.5}
       proOptions={{ hideAttribution: true }}

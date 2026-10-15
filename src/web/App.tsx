@@ -1,4 +1,3 @@
-import { ReactFlowProvider } from '@xyflow/react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { DiffResponse, GraphResponse } from '../shared/api-types.ts';
 import { api } from './api.ts';
@@ -41,9 +40,9 @@ export function App() {
     return <div className="splash">The index is empty. Run <code>xray index &lt;path&gt;</code> first.</div>;
   }
   return (
-    <ReactFlowProvider>
+    <>
       <Explorer graph={graph} diff={diff} />
-    </ReactFlowProvider>
+    </>
   );
 }
 
@@ -284,10 +283,15 @@ function Explorer({ graph, diff }: { graph: GraphResponse; diff: DiffResponse | 
       <nav className="modebar">
         <div className="tabs" role="tablist">
           <button role="tab" className={mode === 'map' ? 'active' : ''} onClick={() => setMode('map')}>Map</button>
-          <button role="tab" className={mode === 'focus' ? 'active' : ''} disabled={!focusId} onClick={() => setMode('focus')}>
+          <button
+            role="tab"
+            className={mode === 'focus' ? 'active' : ''}
+            onClick={() => (selection?.kind === 'node' && selection.id !== focusId ? focusOn(selection.id) : setMode('focus'))}
+            title="One function, class or file with what calls it and what it calls"
+          >
             Focus{focusId ? `: ${name(focusId)}` : ''}
           </button>
-          <button role="tab" className={mode === 'trace' ? 'active' : ''} disabled={!trace} onClick={() => setMode('trace')}>
+          <button role="tab" className={mode === 'trace' ? 'active' : ''} onClick={() => setMode('trace')} title="Feature traces, paths, blast radius and change reviews">
             Trace{trace ? `: ${trace.title}` : ''}
           </button>
         </div>
@@ -354,6 +358,7 @@ function Explorer({ graph, diff }: { graph: GraphResponse; diff: DiffResponse | 
                 view={mapView}
                 highlights={mapHighlights}
                 onSelectNode={(id) => setSelection({ kind: 'node', id })}
+                onOpenNode={focusOn}
                 onSelectEdge={selectEdge}
                 focus={mapFocus}
                 onToggle={toggle}
@@ -361,6 +366,17 @@ function Explorer({ graph, diff }: { graph: GraphResponse; diff: DiffResponse | 
               />
               <Legend />
             </>
+          )}
+          {mode === 'focus' && !focused && <FocusPicker index={index} onPick={focusOn} />}
+          {mode === 'trace' && !trace && (
+            <div className="canvas-start">
+              <h2>Nothing traced yet</h2>
+              <p>Ask a question in the <strong>Trace a feature</strong> box above, for example <em>how does login work?</em></p>
+              <p>Or select something and use <strong>Blast radius</strong>, <strong>Path from</strong> / <strong>Path to</strong> in the panel on the right.</p>
+              {diff?.isRepo && diff.files.length > 0 && (
+                <p><button className="review" onClick={reviewChanges}>Review your {count(diff.files.length, 'changed file')}</button></p>
+              )}
+            </div>
           )}
           {mode === 'focus' && focused && (
             <FlatCanvas
@@ -396,6 +412,34 @@ function Explorer({ graph, diff }: { graph: GraphResponse; diff: DiffResponse | 
           onShowInMap={showInMap}
         />
       </main>
+    </div>
+  );
+}
+
+/** Shown in Focus before anything is focused: the most connected code, as a place to start. */
+function FocusPicker({ index, onPick }: { index: GraphIndex; onPick: (id: string) => void }) {
+  const hubs = useMemo(() => {
+    const degree = (id: string) => (index.incoming.get(id)?.length ?? 0) + (index.outgoing.get(id)?.length ?? 0);
+    return [...index.nodes.values()]
+      .filter((node) => node.layer === 'symbol' && node.type !== 'interface' && node.type !== 'type')
+      .sort((a, b) => degree(b.id) - degree(a.id) || a.id.localeCompare(b.id))
+      .slice(0, 12)
+      .map((node) => ({ node, links: degree(node.id) }));
+  }, [index]);
+  return (
+    <div className="canvas-start">
+      <h2>Pick something to focus on</h2>
+      <p>Search for a function, class or file above, double-click one on the map, or start with the most connected code:</p>
+      <ul className="hub-list">
+        {hubs.map(({ node, links }) => (
+          <li key={node.id}>
+            <button onClick={() => onPick(node.id)}>
+              <span className="hub-name">{node.symbol ?? node.name}</span>
+              <span className="muted small">{node.path} · {links} links</span>
+            </button>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

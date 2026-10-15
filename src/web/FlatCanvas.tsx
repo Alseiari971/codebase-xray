@@ -5,6 +5,7 @@ import {
   MarkerType,
   Position,
   ReactFlow,
+  ReactFlowProvider,
   useReactFlow,
   type Edge,
   type Node,
@@ -79,7 +80,16 @@ interface Props {
   emptyText: string;
 }
 
-export function FlatCanvas({ view, highlights, onNodeClick, onEdgeClick, emptyText }: Props) {
+/** Each canvas gets its own React Flow store, so switching views always starts with a fresh, fitted viewport. */
+export function FlatCanvas(props: Props) {
+  return (
+    <ReactFlowProvider>
+      <FlatCanvasInner {...props} />
+    </ReactFlowProvider>
+  );
+}
+
+function FlatCanvasInner({ view, highlights, onNodeClick, onEdgeClick, emptyText }: Props) {
   const boxes = useMemo(() => layoutFlat(view), [view]);
   const { fitView } = useReactFlow();
 
@@ -149,6 +159,9 @@ export function FlatCanvas({ view, highlights, onNodeClick, onEdgeClick, emptyTe
       onNodeClick={(_event, node) => onNodeClick(node.id)}
       onEdgeClick={(_event, edge) => onEdgeClick((edge.data as { edge: VisibleEdge }).edge)}
       nodesConnectable={false}
+      fitView
+      fitViewOptions={{ padding: 0.15, maxZoom: 1.1 }}
+      zoomOnDoubleClick={false}
       minZoom={0.05}
       maxZoom={2}
       proOptions={{ hideAttribution: true }}

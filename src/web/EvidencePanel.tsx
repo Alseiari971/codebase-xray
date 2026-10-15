@@ -51,7 +51,7 @@ export function EvidencePanel(props: Props) {
             <li><strong>Search</strong> for a function or file to focus on it: what calls it on the left, what it calls on the right.</li>
             <li><strong>Trace a feature</strong> with a question like <em>how does login work?</em></li>
             <li><strong>Review changes</strong> to see your uncommitted edits and what they could break.</li>
-            <li>Or click a cluster on the map to see its files.</li>
+            <li>On the map, press <kbd>+</kbd> to open a cluster, and double-click a file or function to focus on it.</li>
           </ul>
           <p className="hint">Click any node for its source code, and any arrow for the exact lines that prove it.</p>
         </div>
