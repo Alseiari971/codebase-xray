@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { AiStatus, DiffResponse, GraphResponse } from '../shared/api-types.ts';
+import type { AiStatus, DiffResponse, GraphResponse, Overview, Tour } from '../shared/api-types.ts';
 import { api } from './api.ts';
 import type { AnswerState } from './AnswerView.tsx';
 import { EvidencePanel, type Selection } from './EvidencePanel.tsx';
@@ -30,11 +30,13 @@ export function App() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [diff, setDiff] = useState<DiffResponse | null>(null);
   const [ai, setAi] = useState<AiStatus | null>(null);
+  const [overview, setOverview] = useState<Overview | null>(null);
 
   useEffect(() => {
     api.graph().then(setGraph, (error: Error) => setLoadError(error.message));
     api.diff().then(setDiff, () => setDiff(null));
     api.ai().then(setAi, () => setAi(null));
+    api.overview().then(setOverview, () => setOverview(null));
   }, []);
 
   if (loadError) return <div className="splash error">Could not load the graph: {loadError}</div>;
@@ -44,12 +46,12 @@ export function App() {
   }
   return (
     <>
-      <Explorer graph={graph} diff={diff} ai={ai} />
+      <Explorer graph={graph} diff={diff} ai={ai} overview={overview} />
     </>
   );
 }
 
-function Explorer({ graph, diff, ai }: { graph: GraphResponse; diff: DiffResponse | null; ai: AiStatus | null }) {
+function Explorer({ graph, diff, ai, overview }: { graph: GraphResponse; diff: DiffResponse | null; ai: AiStatus | null; overview: Overview | null }) {
   const index = useMemo(() => indexGraph(graph), [graph]);
   const [mode, setMode] = useState<Mode>('map');
   const [selection, setSelection] = useState<Selection>(null);
@@ -59,6 +61,24 @@ function Explorer({ graph, diff, ai }: { graph: GraphResponse; diff: DiffRespons
   const [showExternal, setShowExternal] = useState(false);
   const [showDiff, setShowDiff] = useState(true);
   const [mapFocus, setMapFocus] = useState<{ ids: string[]; seq: number } | null>(null);
+  // The main execution path is shown on the map until dismissed.
+  const [showMainPath, setShowMainPath] = useState(true);
+  const mainPath = overview?.mainPath ?? null;
+
+  // First load: open the clusters on the main execution path, so real files
+  // show instead of folder boxes, and frame the path.
+  const [opened, setOpened] = useState(false);
+  useEffect(() => {
+    if (opened || !mainPath || mainPath.nodes.length === 0) return;
+    setOpened(true);
+    setExpanded((previous) => new Set([...previous, ...mainPath.nodes.flatMap((id) => ancestors(index, id))]));
+    setMapFocus({ ids: mainPath.nodes, seq: 1 });
+  }, [opened, mainPath, index]);
+
+  const previews = useMemo(
+    () => new Map(Object.entries(overview?.clusterPreviews ?? {}).map(([id, symbols]) => [id, symbols.flatMap((symbol) => index.nodes.get(symbol) ?? [])])),
+    [overview, index],
+  );
   const mapView = useMemo(() => buildView(index, { expanded, showExternal }), [index, expanded, showExternal]);
 
   // Focus
@@ -138,6 +158,23 @@ function Explorer({ graph, diff, ai }: { graph: GraphResponse; diff: DiffRespons
     },
     [index],
   );
+
+  const showMainPathTrace = () => {
+    if (!mainPath?.entry) return;
+    setTrace({
+      kind: 'path',
+      title: 'main execution path',
+      status: `${count(mainPath.nodes.length, 'file')}, starting from`,
+      nodeIds: mainPath.nodes,
+      edgeIds: mainPath.edges,
+      entries: [mainPath.entry],
+      ...EMPTY_TRACE_SETS,
+    });
+    setSelection({ kind: 'node', id: mainPath.entry });
+    setMode('trace');
+  };
+
+  const takeTour = (tour: Tour) => focusOn(tour.target);
 
   const run = (label: string, work: () => Promise<Trace>) => {
     setTracing(label);
@@ -250,17 +287,22 @@ function Explorer({ graph, diff, ai }: { graph: GraphResponse; diff: DiffRespons
 
   const mapHighlights = useMemo<Highlights>(() => {
     const flowLike = trace && trace.kind !== 'impact' && trace.kind !== 'diff';
+    const pathLike = !flowLike && showMainPath && mainPath;
     return {
       selectedNode: selection?.kind === 'node' ? (mapView.representative(selection.id) ?? null) : null,
       selectedEdge: selection?.kind === 'edge' ? selection.edge.id : null,
       changed: showDiff ? markVisible(mapView, changedIds) : new Map(),
       impacted: showDiff ? markVisible(mapView, diffImpacted) : new Map(),
       impactEdges: new Set(showDiff ? (diff?.impact.edges ?? []) : []),
-      flowNodes: flowLike ? markVisible(mapView, trace.nodeIds) : new Map(),
-      flowEdges: new Set(flowLike ? trace.edgeIds : []),
-      flowEnds: { from: null, to: null, entries: new Set() },
+      flowNodes: flowLike ? markVisible(mapView, trace.nodeIds) : pathLike ? markVisible(mapView, mainPath.nodes) : new Map(),
+      flowEdges: new Set(flowLike ? trace.edgeIds : pathLike ? mainPath.edges : []),
+      flowEnds: {
+        from: null,
+        to: null,
+        entries: new Set(pathLike && mainPath.entry ? [mapView.representative(mainPath.entry)].filter((id): id is string => id !== undefined) : []),
+      },
     };
-  }, [mapView, selection, showDiff, changedIds, diffImpacted, diff, trace]);
+  }, [mapView, selection, showDiff, changedIds, diffImpacted, diff, trace, showMainPath, mainPath]);
 
   const flatHighlights = (view: { representative: (id: string) => string | undefined }, extra?: Trace): FlatHighlights => {
     const mark = (ids: Iterable<string>) => new Set([...ids].map((id) => view.representative(id)).filter((id): id is string => id !== undefined));
@@ -345,6 +387,16 @@ function Explorer({ graph, diff, ai }: { graph: GraphResponse; diff: DiffRespons
           )}
           {mode === 'map' && (
             <>
+              {mainPath?.entry && (
+                showMainPath ? (
+                  <span className="path-chip" title="Highlighted on the map: the primary entry file and what it relies on most">
+                    Main path from <button className="link" onClick={showMainPathTrace}>{name(mainPath.entry).split('/').at(-1)}</button>
+                    <button className="link" onClick={() => setShowMainPath(false)} aria-label="Hide the main path">✕</button>
+                  </span>
+                ) : (
+                  <button onClick={() => setShowMainPath(true)}>Show main path</button>
+                )
+              )}
               <label className="toggle">
                 <input type="checkbox" checked={showExternal} onChange={(event) => setShowExternal(event.target.checked)} />
                 Packages ({counts.externals})
@@ -408,6 +460,7 @@ function Explorer({ graph, diff, ai }: { graph: GraphResponse; diff: DiffRespons
                 onOpenNode={focusOn}
                 onSelectEdge={selectEdge}
                 focus={mapFocus}
+                previews={previews}
                 onToggle={toggle}
                 onClear={() => setSelection(null)}
               />
@@ -457,6 +510,9 @@ function Explorer({ graph, diff, ai }: { graph: GraphResponse; diff: DiffRespons
           onImpact={traceImpact}
           onFocus={focusOn}
           onShowInMap={showInMap}
+          overview={overview}
+          onMainPath={showMainPathTrace}
+          onTour={takeTour}
           answer={answer}
           aiLabel={aiLabel}
           onSelectEdgeId={selectEdgeId}

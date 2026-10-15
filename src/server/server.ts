@@ -3,6 +3,7 @@ import type { AddressInfo } from 'node:net';
 import { AiConfigError, AiProviderError, ask, detectProvider, PROVIDER_ENV, type AskOptions } from '../ai/explain.ts';
 import type { XrayDb } from '../db/database.ts';
 import { DiffBaseError, getDiff } from '../git/diff.ts';
+import { overview } from '../graph/overview.ts';
 import type { AiStatus, ApiError, AskRequest, FlowRequest, ImpactRequest } from '../shared/api-types.ts';
 import { bundleClient } from './bundle.ts';
 import { FlowRequestError, traceFlow, traceImpact } from './flow.ts';
@@ -75,6 +76,7 @@ export function startServer(options: ServerOptions): Promise<RunningServer> {
       },
     },
     { method: 'GET', pattern: /^\/api\/graph$/, handle: () => json(getGraph(db, root)) },
+    { method: 'GET', pattern: /^\/api\/overview$/, handle: () => json(overview(db, root)) },
     {
       method: 'GET',
       pattern: /^\/api\/node\/(.+)\/evidence$/,

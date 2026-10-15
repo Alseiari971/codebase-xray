@@ -116,13 +116,15 @@ GitHub renders the diagram directly. The JSON snapshot is the portable graph: ev
 
 `xray serve` shows one canvas and an evidence panel. The canvas never tries to draw the whole graph at once; it has three views.
 
+**Where to start.** On first load, the clusters on the **main execution path** are already open and the path is highlighted. The path runs from the primary entry file (the `bin` or `main` in `package.json`, otherwise the entry file that reaches the most code), through single dependencies, to the few files it relies on most. On this repository that's `bin/xray.js → src/cli.ts →` server, indexer, mcp and report. The panel offers one-click starting points: the main path as a trace, and a **tour** per important folder, each opening that folder's most-used function in Focus (*Tour: indexer → `indexRepository`*). All of it is worked out from the graph, so it works on any repository.
+
 - **Focus** (search for anything, or click *Focus*): the selected function, class or file in the middle, what calls it on the left, and what it calls on the right. Click a neighbour to move the focus there, and use *Back* (or Backspace) to return. Depth 2 adds the next ring. A side with too many neighbours is grouped by file.
 - **Trace** shows only the nodes in one result, laid out left to right:
   - *Trace a feature*: ask a question such as *how does checkout work?*; entry points are marked *start* (see [Flow and impact](#flow-and-impact)).
   - *Path from* / *Path to*: the shortest paths between two nodes, or everything downstream of one.
   - *Blast radius*: everything that depends on a node, in red.
   - *Review changes*: your uncommitted edits in amber, and the code that calls or imports them, at risk, in red.
-- **Map**: the cluster overview. Press `+` to expand a cluster into files and a file into symbols. Edges stay faint until you click a node, and then only that node's edges stand out. Packages are hidden unless you turn them on.
+- **Map**: the cluster overview. Each collapsed cluster shows its two most-used functions; click one to focus on it. Press `+` to expand a cluster into files and a file into symbols. Edges stay faint until you click a node, and then only that node's edges stand out. Packages are hidden unless you turn them on.
 
 ![Review changes: changed code in amber, the code that depends on it in red](docs/ui-review-changes.jpg)
 
@@ -137,6 +139,7 @@ The server only listens on `127.0.0.1` and rejects requests whose `Host` header 
 | Endpoint | Returns |
 | --- | --- |
 | `GET /api/graph` | Every node (clusters, files, symbols, externals) and edge, with metadata |
+| `GET /api/overview` | Entry points, the main execution path, guided tours and each cluster's top functions |
 | `GET /api/node/:id/evidence` | The node's source lines, read from disk using its stored line range |
 | `GET /api/edge/:id/evidence` | The cited lines for each piece of evidence behind an edge |
 | `POST /api/flow` | `{ from, to?, maxDepth?, relations?, limit? }` returns the shortest paths, or everything downstream without `to`. `{ question }` returns the matched entry points and their traced flow. |
@@ -229,7 +232,7 @@ Node ids are readable and stable across runs: `cluster:src/auth`, `file:src/auth
 ## Development
 
 ```bash
-npm test           # node:test suite (schema, clustering, adapter, indexer, diff, traversal, server API, MCP, AI, export, UI model and layout, CLI)
+npm test           # node:test suite (schema, clustering, adapter, indexer, diff, traversal, overview, server API, MCP, AI, export, UI model and layout, CLI)
 npm run typecheck  # tsc --noEmit
 ```
 

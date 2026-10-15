@@ -3,6 +3,7 @@
 
 import { getMeta, type XrayDb } from './db/database.ts';
 import { architecture, type Architecture } from './graph/architecture.ts';
+import { entryPoints } from './graph/overview.ts';
 import type { DiffResponse, ImpactResponse } from './shared/api-types.ts';
 
 interface NodeInfo {
@@ -175,9 +176,6 @@ export function graphSnapshot(db: XrayDb, root: string, now = new Date()) {
   };
 }
 
-const TEST_PATH = /(^|\/)(test|tests|__tests__|fixtures)\/|\.(test|spec)\.[cm]?[jt]sx?$/;
-const CODE_LANGUAGES = new Set(['typescript', 'javascript']);
-
 function markdownReport(db: XrayDb, root: string, now: Date): string {
   const arch = architecture(db);
   const count = (sql: string) => db.prepare(sql).pluck().get() as number;
@@ -289,31 +287,6 @@ function markdownReport(db: XrayDb, root: string, now: Date): string {
   }
 
   return `${out.join('\n').trimEnd()}\n`;
-}
-
-/** Source files no other file imports or calls into, excluding tests. */
-function entryPoints(db: XrayDb): { path: string; exports: string[]; uses: number }[] {
-  const files = db
-    .prepare(
-      `SELECT f.path, f.language,
-              (SELECT count(*) FROM edges e JOIN nodes s ON s.id = e.source JOIN nodes t ON t.id = e.target
-                 WHERE s.path = f.path AND t.path IS NOT f.path) AS uses
-       FROM nodes f
-       WHERE f.layer = 'file' AND NOT EXISTS (
-         SELECT 1 FROM edges e JOIN nodes s ON s.id = e.source JOIN nodes t ON t.id = e.target
-         WHERE t.path = f.path AND s.path IS NOT f.path
-       )
-       ORDER BY f.path`,
-    )
-    .all() as { path: string; language: string; uses: number }[];
-  const exportsOf = db
-    .prepare(
-      "SELECT coalesce(symbol, name) FROM nodes WHERE layer = 'symbol' AND path = ? AND parent_id = ? AND json_extract(metadata, '$.exported') = 1 ORDER BY start_line",
-    )
-    .pluck();
-  return files
-    .filter((file) => CODE_LANGUAGES.has(file.language) && !TEST_PATH.test(file.path) && !file.path.endsWith('.d.ts'))
-    .map((file) => ({ path: file.path, exports: exportsOf.all(file.path, `file:${file.path}`) as string[], uses: file.uses }));
 }
 
 function clusterName(arch: Architecture, id: string): string {

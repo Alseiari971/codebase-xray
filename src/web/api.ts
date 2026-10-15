@@ -11,6 +11,7 @@ import type {
   ImpactRequest,
   ImpactResponse,
   NodeEvidenceResponse,
+  Overview,
 } from '../shared/api-types.ts';
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -22,6 +23,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   graph: () => request<GraphResponse>('/api/graph'),
+  overview: () => request<Overview>('/api/overview'),
   nodeEvidence: (id: string) => request<NodeEvidenceResponse>(`/api/node/${encodeURIComponent(id)}/evidence`),
   edgeEvidence: (id: number) => request<EdgeEvidenceResponse>(`/api/edge/${id}/evidence`),
   flow: (body: FlowRequest) =>
