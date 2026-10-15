@@ -1,0 +1,43 @@
+{
+  "name": "codebase-xray",
+  "version": "0.1.0",
+  "description": "AI can build your software. Now understand what it built. An evidence-grounded, interactive map of your codebase.",
+  "type": "module",
+  "bin": {
+    "xray": "bin/xray.js"
+  },
+  "files": [
+    "bin",
+    "src"
+  ],
+  "engines": {
+    "node": ">=20.6"
+  },
+  "scripts": {
+    "xray": "node bin/xray.js",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test test/schema.test.ts test/indexer.test.ts test/cli.test.ts"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Alseiari971/codebase-xray.git"
+  },
+  "keywords": [
+    "architecture",
+    "codebase",
+    "code-map",
+    "dependency-graph",
+    "mcp",
+    "static-analysis"
+  ],
+  "dependencies": {
+    "better-sqlite3": "12.9.0",
+    "ignore": "^7.0.12",
+    "tsx": "^4.23.15"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^20.19.43",
+    "typescript": "^7.0.2"
+  }
+}
