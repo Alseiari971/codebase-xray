@@ -178,6 +178,27 @@ export interface DiffResponse {
   impact: ImpactResponse;
 }
 
+export interface Tour {
+  id: string;
+  /** e.g. "Tour: indexer". */
+  title: string;
+  folder: string;
+  /** The node the tour opens in Focus: the folder's most-used function. */
+  target: string;
+  start: string;
+  path: string;
+}
+
+/** GET /api/overview: where to start reading the repository. */
+export interface Overview {
+  entryPoints: string[];
+  /** From the primary entry file, through single dependencies, to its main branches. */
+  mainPath: { entry: string | null; nodes: string[]; edges: number[] };
+  tours: Tour[];
+  /** Cluster id -> its most-used functions, shown inside the cluster's box. */
+  clusterPreviews: Record<string, string[]>;
+}
+
 export type AiProviderName = 'anthropic' | 'openai' | 'gemini' | 'ollama';
 
 /** GET /api/ai: which provider `POST /api/ask` would use, if any. */

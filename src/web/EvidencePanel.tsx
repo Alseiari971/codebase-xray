@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { ChangedFile, GraphEdge, GraphNode, ResolutionType, Snippet } from '../shared/api-types.ts';
+import type { ChangedFile, GraphEdge, GraphNode, Overview, ResolutionType, Snippet, Tour } from '../shared/api-types.ts';
 import { api } from './api.ts';
 import { AnswerView, type AnswerState } from './AnswerView.tsx';
 import type { GraphIndex, VisibleEdge } from './model.ts';
@@ -22,6 +22,9 @@ interface Props {
   answer: AnswerState | null;
   aiLabel: string | null;
   onSelectEdgeId: (id: number) => void;
+  overview: Overview | null;
+  onMainPath: () => void;
+  onTour: (tour: Tour) => void;
 }
 
 /** Fetches whenever `key` changes and ignores responses for a key that is no longer current. */
@@ -51,13 +54,11 @@ export function EvidencePanel(props: Props) {
       <aside className="panel">
         <div className="panel-empty">
           <h2>Where to start</h2>
-          <ul className="start-list">
-            <li><strong>Search</strong> for a function or file to focus on it: what calls it on the left, what it calls on the right.</li>
-            <li><strong>Trace a feature</strong> with a question like <em>how does login work?</em></li>
-            <li><strong>Review changes</strong> to see your uncommitted edits and what they could break.</li>
-            <li>On the map, press <kbd>+</kbd> to open a cluster, and double-click a file or function to focus on it.</li>
-          </ul>
-          <p className="hint">Click any node for its source code, and any arrow for the exact lines that prove it.</p>
+          <StartHere {...props} />
+          <p className="hint">
+            Or search for any function or file, ask <em>how does … work?</em> in the trace box, or double-click a file on the map. Click any
+            node for its source code, and any arrow for the exact lines that prove it.
+          </p>
         </div>
       </aside>
     );
@@ -70,6 +71,32 @@ export function EvidencePanel(props: Props) {
         <AnswerView answer={props.answer} providerLabel={props.aiLabel} onSelectNode={props.onSelectNode} onSelectEdge={props.onSelectEdgeId} />
       )}
     </aside>
+  );
+}
+
+/** One-click starting points, worked out from the graph: the main execution path and a tour per important folder. */
+function StartHere({ overview, index, onMainPath, onTour }: Props) {
+  if (!overview) return <p className="muted">Loading starting points…</p>;
+  const entry = overview.mainPath.entry ? index.nodes.get(overview.mainPath.entry) : undefined;
+  return (
+    <div className="start-here">
+      {entry && (
+        <button className="start-button main" onClick={onMainPath}>
+          <span className="start-title">▶ Main execution path</span>
+          <span className="start-sub">
+            {overview.mainPath.nodes.length} files from <code>{entry.path}</code>
+          </span>
+        </button>
+      )}
+      {overview.tours.map((tour) => (
+        <button key={tour.id} className="start-button" onClick={() => onTour(tour)} title={`Focus on ${tour.start} in ${tour.path}`}>
+          <span className="start-title">{tour.title}</span>
+          <span className="start-sub">
+            starts at <code>{tour.start}</code> · {tour.path}
+          </span>
+        </button>
+      ))}
+    </div>
   );
 }
 

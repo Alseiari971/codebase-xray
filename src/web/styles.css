@@ -201,6 +201,20 @@ button.danger:hover:not(:disabled) { border-color: var(--impact); }
 .xnode-name { font-family: var(--mono); font-size: 12px; overflow: hidden; text-overflow: ellipsis; }
 .xnode-count { margin-left: auto; color: var(--muted); font-size: 11px; }
 .xnode-toggle { padding: 0; width: 18px; height: 18px; line-height: 16px; font-size: 13px; flex: none; }
+.xnode-preview { display: flex; gap: 6px; padding: 0 10px 8px 34px; overflow: hidden; }
+.preview-chip {
+  padding: 1px 7px;
+  font-family: var(--mono);
+  font-size: 11px;
+  border-radius: 5px;
+  border-color: color-mix(in srgb, var(--symbol) 45%, var(--border));
+  background: color-mix(in srgb, var(--symbol) 8%, var(--surface));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 50%;
+}
+.preview-chip:hover { border-color: var(--symbol); }
 .xnode-badge { font-size: 10px; padding: 0 5px; border-radius: 8px; flex: none; }
 .xnode-badge.changed { background: var(--changed); color: #1b1b1b; }
 .xnode-badge.flow { background: var(--flow); color: #1b1b1b; }
@@ -348,6 +362,13 @@ button.cite.unknown { color: var(--impact); border-color: var(--impact); text-de
 .hub-list button { width: 100%; text-align: left; display: flex; flex-direction: column; gap: 2px; padding: 8px 12px; border-left: 3px solid var(--symbol); }
 .hub-name { font-family: var(--mono); font-weight: 600; color: var(--text); }
 .start-list { padding-left: 18px; color: var(--muted); }
+.start-here { display: flex; flex-direction: column; gap: 8px; margin: 12px 0 16px; }
+.start-button { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left; padding: 9px 12px; border-left: 3px solid var(--symbol); }
+.start-button.main { border-left-color: var(--flow); background: color-mix(in srgb, var(--flow) 8%, var(--surface-2)); }
+.start-title { font-weight: 600; }
+.start-sub { color: var(--muted); font-size: 12px; }
+.start-sub code { color: var(--text); }
+.path-chip { display: inline-flex; align-items: center; gap: 6px; color: var(--flow); border: 1px solid color-mix(in srgb, var(--flow) 45%, var(--border)); border-radius: 6px; padding: 2px 8px; }
 .start-list li { margin-bottom: 8px; }
 .start-list strong { color: var(--text); }
 

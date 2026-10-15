@@ -16,6 +16,9 @@ export interface Box {
 }
 
 export const NODE_HEIGHT = 44;
+/** A collapsed cluster that shows its top functions inside the box. */
+export const PREVIEW_HEIGHT = 72;
+const PREVIEW_MIN_WIDTH = 250;
 export const CONTAINER_HEADER = 40;
 export const CONTAINER_PADDING = 16;
 const GAP = 20;
@@ -32,7 +35,7 @@ export function leafWidth(node: VisibleNode): number {
   return Math.min(340, Math.max(160, (node.node.name.length + kind.length) * 7 + 110));
 }
 
-export function layoutView(view: GraphView): Map<string, Box> {
+export function layoutView(view: GraphView, hasPreview: (node: VisibleNode) => boolean = () => false): Map<string, Box> {
   const boxes = new Map<string, Box>();
   const childrenOf = new Map<string | null, VisibleNode[]>();
   for (const node of view.nodes) childrenOf.set(node.parent, [...(childrenOf.get(node.parent) ?? []), node]);
@@ -68,7 +71,12 @@ export function layoutView(view: GraphView): Map<string, Box> {
           height: content.height + CONTAINER_HEADER + CONTAINER_PADDING,
         });
       } else {
-        sizes.set(child.id, { width: leafWidth(child), height: NODE_HEIGHT });
+        sizes.set(
+          child.id,
+          hasPreview(child)
+            ? { width: Math.max(leafWidth(child), PREVIEW_MIN_WIDTH), height: PREVIEW_HEIGHT }
+            : { width: leafWidth(child), height: NODE_HEIGHT },
+        );
       }
     }
 

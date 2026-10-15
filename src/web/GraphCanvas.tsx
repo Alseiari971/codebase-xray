@@ -13,6 +13,7 @@ import {
   type NodeProps,
 } from '@xyflow/react';
 import { memo, useEffect, useMemo, useRef } from 'react';
+import type { GraphNode } from '../shared/api-types.ts';
 import type { GraphView, VisibleEdge, VisibleNode } from './model.ts';
 import { layoutView } from './layout.ts';
 
@@ -37,6 +38,9 @@ interface XNodeData extends Record<string, unknown> {
   flowEnd: 'from' | 'to' | 'entry' | null;
   direction: 'LR' | 'TB';
   onToggle: (id: string) => void;
+  /** A collapsed cluster's most-used functions, shown inside its box. */
+  preview: GraphNode[];
+  onOpenNode: (id: string) => void;
 }
 
 const LAYER_LABEL: Record<string, string> = {
@@ -48,7 +52,7 @@ const LAYER_LABEL: Record<string, string> = {
 };
 
 const XNode = memo(function XNode({ data, selected }: NodeProps<Node<XNodeData>>) {
-  const { visible, changed, impacted, inFlow, flowEnd, direction, onToggle } = data;
+  const { visible, changed, impacted, inFlow, flowEnd, direction, onToggle, preview, onOpenNode } = data;
   const vertical = direction === 'TB';
   const { node } = visible;
   const classes = [
@@ -92,6 +96,23 @@ const XNode = memo(function XNode({ data, selected }: NodeProps<Node<XNodeData>>
         )}
         {!visible.isContainer && visible.childCount > 0 && <span className="xnode-count">{visible.childCount}</span>}
       </div>
+      {preview.length > 0 && (
+        <div className="xnode-preview">
+          {preview.map((symbol) => (
+            <button
+              key={symbol.id}
+              className="preview-chip"
+              title={`${symbol.symbol ?? symbol.name} · ${symbol.path}:${symbol.startLine}. Click to focus on it`}
+              onClick={(event) => {
+                event.stopPropagation();
+                onOpenNode(symbol.id);
+              }}
+            >
+              {symbol.symbol ?? symbol.name}
+            </button>
+          ))}
+        </div>
+      )}
       <Handle type="source" position={vertical ? Position.Bottom : Position.Right} />
     </div>
   );
@@ -129,6 +150,7 @@ interface Props {
   onClear: () => void;
   /** Zoom to these nodes instead of the whole graph; `seq` changes on every request. */
   focus: { ids: string[]; seq: number } | null;
+  previews: ReadonlyMap<string, GraphNode[]>;
 }
 
 /** Each canvas gets its own React Flow store, so switching views always starts with a fresh, fitted viewport. */
@@ -140,8 +162,9 @@ export function GraphCanvas(props: Props) {
   );
 }
 
-function GraphCanvasInner({ view, highlights, onSelectNode, onOpenNode, onSelectEdge, onToggle, onClear, focus }: Props) {
-  const boxes = useMemo(() => layoutView(view), [view]);
+function GraphCanvasInner({ view, highlights, onSelectNode, onOpenNode, onSelectEdge, onToggle, onClear, focus, previews }: Props) {
+  const previewOf = (visible: VisibleNode) => (visible.node.layer === 'cluster' && !visible.isContainer ? (previews.get(visible.id) ?? []) : []);
+  const boxes = useMemo(() => layoutView(view, (visible) => previewOf(visible).length > 0), [view, previews]); // eslint-disable-line react-hooks/exhaustive-deps
   const { fitView } = useReactFlow();
 
   const nodes = useMemo<Node<XNodeData>[]>(
@@ -171,10 +194,12 @@ function GraphCanvasInner({ view, highlights, onSelectNode, onOpenNode, onSelect
                     : null,
             direction: box.direction,
             onToggle,
+            preview: previewOf(visible),
+            onOpenNode,
           },
         };
       }),
-    [view, boxes, highlights, onToggle],
+    [view, boxes, highlights, onToggle, previews, onOpenNode], // eslint-disable-line react-hooks/exhaustive-deps
   );
 
   const edges = useMemo<Edge[]>(
