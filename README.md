@@ -1,5 +1,7 @@
 # Codebase X-Ray
 
+[![CI](https://github.com/Alseiari971/codebase-xray/actions/workflows/ci.yml/badge.svg)](https://github.com/Alseiari971/codebase-xray/actions/workflows/ci.yml)
+
 **AI can build your software. Now understand what it built.**
 
 Codebase X-Ray turns a repository into an interactive map of how it actually works: architecture, dependencies, feature flows, and change impact. Every relationship on the map traces back to exact source lines. The same local evidence graph serves a browser UI and an MCP server, so you and your coding agent work from the same facts.
