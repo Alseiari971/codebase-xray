@@ -54,6 +54,8 @@ export interface Snippet {
   stale: boolean;
   /** For node evidence built from edges (e.g. who imports a package). */
   edgeId?: number;
+  /** Row id in the evidence table; the same id MCP tools return. */
+  evidenceId?: number;
 }
 
 /** GET /api/node/:id/evidence */

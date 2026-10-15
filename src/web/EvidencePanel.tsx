@@ -78,6 +78,9 @@ function NodeDetails({ id, index, expanded, changedFiles, changedIds, onSelectNo
           {changedIds.has(id) && <span className="pill changed">changed{change ? ` (${change.status})` : ''}</span>}
         </div>
         <h2>{node.symbol ?? node.name}</h2>
+        <p className="panel-id" title="The id MCP tools and the API use for this node">
+          <code>{node.id}</code>
+        </p>
         {node.path && (
           <p className="panel-path">
             {node.path}
@@ -169,6 +172,7 @@ function UnderlyingEdge({ edge, index, onSelectNode }: { edge: GraphEdge; index:
         <button className="link" onClick={() => onSelectNode(edge.target)}>{label(index.nodes.get(edge.target))}</button>
         {members.length > 0 && <span className="muted"> ({members.join(', ')})</span>}
         <TrustBadge type={edge.resolutionType} confidence={edge.confidence} />
+        <span className="muted small" title="Edge id, as returned by the API and MCP tools">edge #{edge.id}</span>
       </div>
       {evidence.loading && <p className="muted">Loading…</p>}
       {evidence.error && <p className="panel-error">{evidence.error}</p>}
@@ -195,6 +199,9 @@ function SnippetView({ snippet, changedLines }: { snippet: Snippet; changedLines
           {snippet.endLine !== snippet.startLine ? `-${snippet.endLine}` : ''}
         </span>
         {snippet.rule && <span className="pill subtle">{snippet.rule}</span>}
+        {snippet.evidenceId !== undefined && (
+          <span className="muted small" title="Evidence id, as returned by the API and MCP tools">evidence #{snippet.evidenceId}</span>
+        )}
         {snippet.stale && <span className="pill warn" title="The file changed since indexing; these lines may have moved.">stale</span>}
       </figcaption>
       <pre>

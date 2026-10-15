@@ -44,6 +44,7 @@ interface EdgeRow {
 
 interface EvidenceRow {
   edge_id: number;
+  id: number;
   file_path: string;
   start_line: number;
   end_line: number;
@@ -157,7 +158,7 @@ class SourceFiles {
     const file = this.read(row.file_path)!;
     const excerpt = file.lines.slice(row.start_line - 1, row.end_line).join('\n');
     const excerptMatches = row.excerpt_hash === createHash('sha256').update(excerpt).digest('hex');
-    return { ...snippet, stale: snippet.stale && !excerptMatches, edgeId: row.edge_id };
+    return { ...snippet, stale: snippet.stale && !excerptMatches, edgeId: row.edge_id, evidenceId: row.id };
   }
 
   snippet(path: string, startLine: number, endLine: number, rule: string | null): Snippet | undefined {

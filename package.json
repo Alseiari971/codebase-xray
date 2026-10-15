@@ -16,7 +16,7 @@
   "scripts": {
     "xray": "node bin/xray.js",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test test/schema.test.ts test/cluster.test.ts test/typescript-adapter.test.ts test/indexer.test.ts test/diff.test.ts test/traverse.test.ts test/web-model.test.ts test/server.test.ts test/cli.test.ts"
+    "test": "node --import tsx --test test/schema.test.ts test/cluster.test.ts test/typescript-adapter.test.ts test/indexer.test.ts test/diff.test.ts test/traverse.test.ts test/web-model.test.ts test/server.test.ts test/mcp.test.ts test/cli.test.ts"
   },
   "repository": {
     "type": "git",
@@ -32,6 +32,7 @@
   ],
   "dependencies": {
     "@dagrejs/dagre": "^3.1.1",
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "@xyflow/react": "^12.12.0",
     "better-sqlite3": "12.9.0",
     "esbuild": "^0.28.2",
@@ -39,7 +40,8 @@
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "ts-morph": "^28.0.0",
-    "tsx": "^4.23.15"
+    "tsx": "^4.23.15",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^9.6.0",

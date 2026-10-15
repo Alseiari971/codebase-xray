@@ -6,7 +6,7 @@
 
 Codebase X-Ray turns a repository into an interactive map of how it actually works: architecture, dependencies, feature flows, and change impact. Every relationship on the map traces back to exact source lines. The same local evidence graph serves a browser UI and an MCP server, so you and your coding agent work from the same facts.
 
-> **Status: Phase 4 (diff review and flow tracing).** `xray ./my-project` indexes a TypeScript/JavaScript repository and opens an interactive map. Click any node or edge for the exact source lines behind it, and ask "how does login work?" to trace a feature. Before you commit, uncommitted changes light up amber and everything that calls or imports them lights up red. The MCP server is still to come (see [Roadmap](#roadmap)).
+> **Status: Phase 5 (MCP server).** `xray ./my-project` indexes a TypeScript/JavaScript repository and opens an interactive map. Click any node or edge for the exact source lines behind it, and ask "how does login work?" to trace a feature. Before you commit, uncommitted changes light up amber and everything that calls or imports them lights up red. `xray mcp` gives your coding agent read access to the same evidence graph, with the same ids.
 
 ![An uncommitted edit to hashPassword in amber, with everything that depends on it in red](docs/ui-diff-impact.jpg)
 
@@ -33,7 +33,7 @@ Then open http://localhost:4173. To put `xray` on your PATH, run `npm link` once
 | `xray diff [path]` / `xray --uncommitted` | Uncommitted changes, the symbols they touch, and what depends on them | Working |
 | `xray flow "<question>" [path]` | Trace a feature from the symbols its words name | Working |
 | `xray impact <target> [path]` | Blast radius of a file, symbol name or node id | Working |
-| `xray mcp <path>` | Read-only MCP server for Claude Code, Cursor, Windsurf, etc. | Planned |
+| `xray mcp <path>` | Read-only MCP server (stdio) for Claude Code, Cursor, Windsurf and other agents | Working |
 
 Options: `--db <file>` to store the index somewhere else, `--full` to re-extract every file, `--port <n>` for `serve`, `--base <ref>` for `diff`, `--depth <n>` for how many hops `diff`, `flow` and `impact` follow, `--direction upstream|downstream|both` for `impact`.
 
@@ -115,6 +115,41 @@ All traversal is deterministic and runs in SQLite as recursive CTEs ([`src/graph
 - **Blast radius** walks `upstream` (what depends on a node, i.e. what a change could break) or `downstream` (what it depends on) and groups the result by file and cluster.
 - **Diff review.** `git diff --unified=0` hunks are overlapped with symbol line ranges in a single SQL query. The changed nodes are recorded in the `git_changes` table, flagged `git-changed`, with their changed lines. Their blast radius starts from the innermost changed symbols: editing a method's body impacts the method's callers, not every user of its class. A file itself counts as changed only when the edit is outside every symbol, or the file was deleted.
 
+## Connect your coding agent
+
+`xray mcp <path>` runs a read-only [MCP](https://modelcontextprotocol.io) server over stdio for the repository at `<path>`. It indexes on start and re-indexes changed files before answering (at most every 3 s), so the agent always sees the code as it is now, including its own edits. It never writes to your repository; only the `.xray/` index is updated.
+
+**Claude Code**
+
+```bash
+claude mcp add xray -- node /path/to/codebase-xray/bin/xray.js mcp /path/to/your-project
+```
+
+**Cursor** (`.cursor/mcp.json`) and **Windsurf** (`~/.codeium/windsurf/mcp_config.json`)
+
+```json
+{
+  "mcpServers": {
+    "xray": {
+      "command": "node",
+      "args": ["/path/to/codebase-xray/bin/xray.js", "mcp", "/path/to/your-project"]
+    }
+  }
+}
+```
+
+| Tool | What the agent gets |
+| --- | --- |
+| `get_architecture_clusters` | Clusters with file and symbol counts, their largest files, which clusters depend on which, and the packages each uses |
+| `trace_flow` | `{ question }` such as "how does checkout work?", or `{ from, to? }`: entry points, nodes, and edges with resolution type and evidence |
+| `get_blast_radius` | `{ target, direction?, maxDepth? }`: what calls or imports a file, symbol or package, grouped by file and distance |
+| `get_node_evidence` | `{ target }`: the node's numbered source lines and its edges with evidence. `{ edgeId }`: every piece of evidence behind one edge. |
+| `get_changed_nodes` | `{ base? }`: uncommitted changes mapped to `git-changed` symbols, plus what they could break |
+
+Targets can be node ids, file paths, symbol names (`login`, `UserRepository.findByEmail`) or package names (`bcrypt`).
+
+**Shared truth.** The tools are thin wrappers over the same SQLite queries as the web UI, so they return the same ids. Node ids are shown under each node's title in the evidence panel, and edges and evidence show `edge #12` and `evidence #34`. When an agent says "`sym:src/auth/login.ts#login` calls `hashPassword` (edge #8, evidence #15 at `src/auth/login.ts:12`)", you can find exactly that in the browser. `test/mcp.test.ts` checks this: for the same questions, the MCP tools and the HTTP API return identical node, edge and evidence ids.
+
 ## How indexing works
 
 No LLM or API key is involved. Everything comes from the TypeScript compiler.
@@ -156,7 +191,7 @@ Node ids are readable and stable across runs: `cluster:src/auth`, `file:src/auth
 ## Development
 
 ```bash
-npm test           # node:test suite (schema, clustering, adapter, indexer, diff, traversal, server API, UI model and layout, CLI)
+npm test           # node:test suite (schema, clustering, adapter, indexer, diff, traversal, server API, MCP, UI model and layout, CLI)
 npm run typecheck  # tsc --noEmit
 ```
 
@@ -168,7 +203,7 @@ The sources run directly through [tsx](https://tsx.is), so there is no build ste
 - [x] **Phase 2: AST indexer.** ts-morph adapter for symbols, imports and the call graph with evidence, plus folder clusters
 - [x] **Phase 3: Local server and UI.** HTTP/JSON API, React Flow map with an evidence panel, flow tracing, and the git diff overlay
 - [x] **Phase 4: Diff review and flow tracing.** Recursive-CTE traversal, question-driven feature tracing, blast radius, and `git-changed` flags with change impact
+- [x] **Phase 5: MCP server.** Read-only stdio tools `get_architecture_clusters`, `trace_flow`, `get_blast_radius`, `get_node_evidence` and `get_changed_nodes`, sharing ids with the UI
 - [ ] Framework adapters: routes (`defines-route`), database access (`reads-table` / `writes-table`), env config
-- [ ] `xray mcp`: read-only MCP tools (`get_architecture_clusters`, `trace_flow`, `get_blast_radius`, `get_node_evidence`, `get_changed_nodes`)
 - [ ] Grounded AI explanations (optional, bring your own key)
 - [ ] Exports: SVG, JSON, Markdown

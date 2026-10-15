@@ -3,14 +3,16 @@ import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { openDatabase, type XrayDb } from './db/database.ts';
 import { DEFAULT_DIFF_IMPACT_DEPTH, getDiff } from './git/diff.ts';
-import { fileNodeId } from './graph/ids.ts';
 import { blastRadius, DEFAULT_IMPACT_DEPTH } from './graph/impact.ts';
 import { traceQuestion } from './graph/question.ts';
+import { resolveTarget, TargetError } from './graph/resolve.ts';
 import { indexRepository } from './indexer/indexer.ts';
 import { DEFAULT_QUESTION_DEPTH } from './server/flow.ts';
 import { describeNodes, diffLines, flowTree, impactLines, impactSummary, label } from './report.ts';
 import { bundleClient } from './server/bundle.ts';
 import { startServer, type RunningServer } from './server/server.ts';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { createMcpServer } from './mcp/server.ts';
 
 export interface Io {
   out: (line: string) => void;
@@ -41,7 +43,7 @@ Usage:
                               (alias: xray --uncommitted)
   xray flow <question> [path] Trace a feature, e.g. xray flow "how does checkout work?"
   xray impact <target> [path] Blast radius of a file, symbol or node id: what depends on it
-  xray mcp <path>             Start the read-only MCP server for coding agents
+  xray mcp <path>             Read-only MCP server (stdio) for Claude Code, Cursor, Windsurf, ...
 
 Options:
   --db <file>                 Index location (default: <path>/.xray/index.db)
@@ -99,7 +101,7 @@ export async function main(argv: string[] = process.argv.slice(2), io: Io = defa
       case 'impact':
         return impact(rest, values, io);
       case 'mcp':
-        return mcp(rest, values, io);
+        return await mcp(rest, values, io);
       default:
         // `xray ./my-project` is the blueprint's one-shot entry point.
         if (rest.length === 0 && isDirectory(command)) {
@@ -213,7 +215,7 @@ function impact(args: string[], values: Values, io: Io): number {
   }
   const root = optionalRoot(rest, 0, 'impact');
   return withIndex(root, values, (db) => {
-    const id = resolveTarget(db, target);
+    const id = resolveOrUsage(db, target);
     const maxDepth = depthOption(values) ?? DEFAULT_IMPACT_DEPTH;
     const result = blastRadius(db, [id], { direction, maxDepth });
     const verb = direction === 'upstream' ? 'depend on it' : direction === 'downstream' ? 'it depends on' : 'are connected to it';
@@ -228,21 +230,13 @@ function impact(args: string[], values: Values, io: Io): number {
   });
 }
 
-/** A node id, a repository file path, or a symbol name (`login`, `UserRepository.findByEmail`). */
-function resolveTarget(db: XrayDb, target: string): string {
-  const exists = db.prepare('SELECT 1 FROM nodes WHERE id = ?').pluck();
-  if (exists.get(target)) return target;
-  const path = target.replace(/\\/g, '/').replace(/^\.\//, '');
-  if (exists.get(fileNodeId(path))) return fileNodeId(path);
-  const symbols = db
-    .prepare("SELECT id FROM nodes WHERE layer = 'symbol' AND (symbol = ? OR name = ?) ORDER BY id LIMIT 9")
-    .pluck()
-    .all(target, target) as string[];
-  if (symbols.length === 1) return symbols[0]!;
-  if (symbols.length > 1) {
-    throw new UsageError(`"${target}" matches several symbols; pass one of these ids:\n  ${symbols.slice(0, 8).join('\n  ')}`);
+function resolveOrUsage(db: XrayDb, target: string): string {
+  try {
+    return resolveTarget(db, target);
+  } catch (error) {
+    if (error instanceof TargetError) throw new UsageError(error.message);
+    throw error;
   }
-  throw new UsageError(`No file, symbol or node named "${target}" in the index`);
 }
 
 function withIndex(root: string, values: Values, run: (db: XrayDb) => number): number {
@@ -267,15 +261,31 @@ function depthOption(values: Values): number | undefined {
   return depth;
 }
 
-function mcp(args: string[], values: Values, io: Io): number {
+/**
+ * Speaks MCP over stdin/stdout, so nothing else may be written to stdout:
+ * progress goes to stderr, which MCP clients show as server logs.
+ */
+async function mcp(args: string[], values: Values, io: Io): Promise<number> {
   const root = requireRepo(args, 'mcp');
-  requireIndex(root, values);
-  return notImplemented('mcp', io);
-}
+  const db = openDatabase(dbPathFor(root, values));
+  try {
+    // Index on start (incrementally), so an agent never meets a missing or stale graph.
+    const stats = indexRepository(db, root);
+    io.err(`Codebase X-Ray MCP server: ${stats.files} files, ${stats.symbols} symbols indexed for ${root}.`);
 
-function notImplemented(command: string, io: Io): number {
-  io.err(`xray ${command}: not implemented yet. Run \`xray index <path>\` to build the evidence graph.`);
-  return 1;
+    const server = createMcpServer({ db, root, version: readVersion() });
+    const closed = new Promise<void>((resolve) => {
+      server.server.onclose = () => resolve();
+      process.stdin.once('end', () => resolve());
+    });
+    await server.connect(new StdioServerTransport());
+    io.err('Waiting for an MCP client on stdio.');
+    await Promise.race([closed, waitForSignal()]);
+    await server.close();
+    return 0;
+  } finally {
+    db.close();
+  }
 }
 
 function requireRepo(args: string[], command: string): string {

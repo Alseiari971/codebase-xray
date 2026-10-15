@@ -223,6 +223,8 @@ button.danger:hover:not(:disabled) { border-color: var(--impact); }
 .panel-header h2 { margin: 6px 0 2px; font-size: 16px; font-family: var(--mono); word-break: break-all; }
 .panel-kicker { display: flex; gap: 6px; flex-wrap: wrap; }
 .panel-path { margin: 0; color: var(--muted); font-family: var(--mono); font-size: 12px; word-break: break-all; }
+.panel-id { margin: 2px 0 0; }
+.panel-id code { color: var(--muted); font-size: 11px; word-break: break-all; user-select: all; }
 .panel-actions { display: flex; gap: 6px; margin: 10px 0 4px; flex-wrap: wrap; }
 .panel-error { color: var(--flow); }
 .notice {
