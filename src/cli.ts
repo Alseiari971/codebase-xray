@@ -25,6 +25,7 @@ Usage:
 
 Options:
   --db <file>                 Index location (default: <path>/.xray/index.db)
+  --full                      Re-extract every file instead of only changed ones
   --port <number>             Port for \`serve\` (default: 4173)
   --base <ref>                Git ref to diff against (default: working tree vs HEAD)
   -h, --help                  Show this help
@@ -32,6 +33,7 @@ Options:
 
 const OPTIONS = {
   db: { type: 'string' },
+  full: { type: 'boolean', default: false },
   port: { type: 'string', default: '4173' },
   base: { type: 'string' },
   uncommitted: { type: 'boolean', default: false },
@@ -95,12 +97,18 @@ function index(args: string[], values: Values, io: Io): number {
   const db = openDatabase(dbPath);
   try {
     io.out(`Indexing ${root} ...`);
-    const stats = indexRepository(db, root);
+    const stats = indexRepository(db, root, { full: values.full });
     io.out(
       `Indexed ${stats.files} files in ${stats.durationMs} ms ` +
-        `(${stats.added} added, ${stats.updated} updated, ${stats.unchanged} unchanged, ${stats.removed} removed, ` +
+        `(${stats.added} added, ${stats.updated} updated, ${stats.unchanged} unchanged, ${stats.removed} removed; ` +
         `${stats.skipped} skipped as unsupported).`,
     );
+    io.out(stats.parsed === 0 ? 'Nothing to re-parse.' : `Parsed ${stats.parsed} files.`);
+    io.out(
+      `Graph: ${stats.clusters} clusters, ${stats.symbols} symbols, ${stats.imports} import edges, ` +
+        `${stats.calls} call edges, ${stats.externals} external modules.`,
+    );
+    if (stats.unresolvedImports > 0) io.out(`${stats.unresolvedImports} imports could not be resolved to a file in the repository.`);
     io.out(`Evidence graph: ${dbPath}`);
     return 0;
   } finally {
